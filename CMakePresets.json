@@ -1,0 +1,59 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "msvc2022-i386",
+      "displayName": "MSVC 2022 C++17, Win32 tools and parser tests",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "Win32",
+      "binaryDir": "${sourceDir}/Binaries/.build/msvc2022-i386",
+      "cacheVariables": {
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "msvc2022-amd64",
+      "displayName": "MSVC 2022 C++17, AMD64 tools and parser tests",
+      "inherits": "msvc2022-i386",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/Binaries/.build/msvc2022-amd64"
+    },
+    {
+      "name": "gcc13-i386",
+      "displayName": "GCC 13 MinGW, Win32 tools and parser tests",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/Binaries/.build/gcc13-i386",
+      "toolchainFile": "${sourceDir}/cmake/mingw-i386.cmake",
+      "cacheVariables": {
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "gcc13-amd64",
+      "displayName": "GCC 13 MinGW, AMD64 tools and parser tests",
+      "inherits": "gcc13-i386",
+      "binaryDir": "${sourceDir}/Binaries/.build/gcc13-amd64",
+      "toolchainFile": "${sourceDir}/cmake/mingw-amd64.cmake"
+    }
+  ],
+  "buildPresets": [
+    { "name": "msvc2022-i386", "configurePreset": "msvc2022-i386", "configuration": "Debug" },
+    { "name": "msvc2022-amd64", "configurePreset": "msvc2022-amd64", "configuration": "Debug" },
+    { "name": "gcc13-i386", "configurePreset": "gcc13-i386" },
+    { "name": "gcc13-amd64", "configurePreset": "gcc13-amd64" }
+  ],
+  "testPresets": [
+    {
+      "name": "msvc2022-i386",
+      "configurePreset": "msvc2022-i386",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "msvc2022-amd64",
+      "configurePreset": "msvc2022-amd64",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

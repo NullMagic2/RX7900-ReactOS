@@ -1,0 +1,231 @@
+Module: rx7900.provenance.opengl
+Purpose: Record OpenGL contract references and implementation limits.
+Created: 2026-10-21
+
+The fixed-function frontend is original C++ implementation. It does not copy
+Mesa, Khronos, ReactOS or Sonic runtime source. Public API enumerants and required
+mathematical behavior are compatibility facts. No third-party implementation
+permission notice is therefore asserted for fixed_function.hpp/.cpp. The GFX11
+packet construction in gfx11.hpp/.cpp adapts AMD PM4 definitions and RadeonSI
+draw/address emission and carries the permission notices preserved below.
+Existing project SDMA,
+display and memory modules retain their own upstream permission notices.
+
+Primary references inspected on 2026-10-21:
+
+ReactOS a97c8a2cdcf6a9a7f5cc543951a02ccb7a80d8ca
+  dll/opengl/opengl32/icd.h
+  dll/opengl/opengl32/icdload.c
+  dll/opengl/opengl32/wgl.c
+https://github.com/reactos/reactos/tree/a97c8a2cdcf6a9a7f5cc543951a02ccb7a80d8ca/dll/opengl/opengl32
+The loader requires sixteen Drv* exports and the OpenGL 1.1 dispatch table has
+336 entries. A partial frontend cannot be installed as an operational ICD.
+
+Mesa WGL ABI reference, commit d6287a94b697ffe12a4e576a38943cdf4e90cdb0:
+https://cgit.freedesktop.org/mesa/mesa/tree/src/gallium/frontends/wgl/gldrv.h?id=d6287a94b697ffe12a4e576a38943cdf4e90cdb0
+https://docs.mesa3d.org/systems.html
+Mesa contains separate API frontends, graphics drivers, shader compilation and
+platform integration. Its software and layered backends are not Navi31 hardware
+acceleration. No Mesa API frontend or shader compiler is compiled into this project;
+the bounded PM4 adaptation described below is separate from those runtime stacks.
+
+Khronos normative OpenGL 1.1 specification:
+https://registry.khronos.org/OpenGL/specs/gl/glspec11.pdf
+Contracts: column-major postmultiplied matrices; homogeneous clip coordinates;
+inverse-transposed eye normals; positional/directional lighting; compatibility
+quad and quad-strip vertex order; flat-shaded final provoking vertex; display
+list commands evaluated under the call-time matrices.
+
+Acceptance workload supplied by the user:
+  wglgears.exe, PE32 i386
+  SHA256 858ba95ea3c9af4ded1f4100e59b6e8e57024f3efef56304dbd48106e8f2f6f7
+Frontend supports the relevant matrix/normal/material/light operations, retained
+display lists, triangles/quads/quad strips, viewport, depth/culling state and flat
+or smooth vertex colors. Color/depth clear operations preserve default and explicit
+clamped clear values and require a real attachment backend. The tests observe
+transformed triangles and clear requests and never render
+or claim GPU completion. They include an independently authored annular geometry
+test with the gears retained topology, not copied gears application source.
+
+Frontend limits: no native WGL/ICD exports, GL version strings, pixels, depth buffer,
+shader compiler, complete GFX11 pipeline/raster backend, clipping, presentation, display
+list allocation through glGenLists or native contexts. The command API is an
+internal bounded frontend, not a conformant public OpenGL implementation. It has
+one default light and material, no texture/specular/fog/selection/evaluator stack.
+Retained lists have explicit command-arena capacity, nesting and total expanded
+command budgets, preventing exponential acyclic references from running forever.
+Application pointer validation and native ABI translation remain OS boundaries.
+A graphics backend must consume clip-space triangles, clip all six planes,
+apply perspective division and interpolation, honor depth/culling/viewport,
+retain owned GPU buffers through fences, submit GFX11 work and present to the
+correct drawable. An absent backend fails explicitly.
+
+WGL ICD and GL 1.1 context, 2026-10-23 (src/opengl/gl_api.hpp, gl_pipeline.*,
+gl_clip.*, gl_raster.*, gl_context.*, gl_shader_gfx11.*, src/opengl/icd/*):
+original C++ implementation. gl_api.hpp enumerant values and the transform,
+lighting, clipping and per-fragment behaviour are OpenGL 1.1 compatibility facts
+from the Khronos specification above; no Mesa, Khronos or ReactOS implementation
+source is copied. icd_table.hpp reproduces the GLDISPATCHTABLE / GLCLTPROCTABLE /
+PFN_SETPROCTABLE / DHGLRC declarations from the pinned ReactOS a97c8a2
+dll/opengl/opengl32/icd.h (its field order and signatures are an ABI the loader
+fixes); icd.h carries ReactOS's COPYING. The dispatch order is generated from that
+header. The ICD's shipped renderer is the software reference rasterizer; no
+hardware acceleration is claimed.
+
+GFX11 shader generation, 2026-10-23 (src/opengl/gl_shader_gfx11.*, additive
+graphics subset in src/hardware/gfx11_isa.* and tests/gfx11_interp.hpp): original
+encoder and generator. New float VOP1/VOP2, EXP and s_sendmsg encodings are checked
+byte-exact against the pinned LLVM 18.1.8 GFX11 MC vectors added under
+work/upstream-gpuinit/llvm-mc-gfx11/ (gfx11_asm_exp.s, exp.s, exp-gfx10.s,
+gfx11_asm_vinterp.s, gfx11_asm_ldsdir.s, gfx11_asm_mimg.s; Apache-2.0 WITH
+LLVM-exception; SHA-256 in work/upstream-gpuinit/SHA256SUMS; test data only, not
+shipped). The NGG vertex-shader allocation/parameter path and the user-SGPR layout
+follow Mesa 24.2.0 (MIT) read as behaviour references and pinned under
+work/upstream-gpuinit/mesa-24.2.0/ (ac_nir_lower_ngg.c, ac_nir.c, radv_shader_args.c,
+ac_shader_args.h/.c, radv_pipeline_graphics.c, radv_shader_info.c, radv_shader.h,
+aco_instruction_selection.cpp, aco_instruction_selection_setup.cpp, aco_interface.cpp,
+ac_formats.c, ac_surface.c, ac_shader_util.h, si_shader.c/.h, si_state.c,
+si_state_shaders.cpp; SHA-256 in SHA256SUMS); no Mesa code is copied or compiled in.
+The generated shader datapath is verified only in the host interpreter; NGG geometry
+wiring, context/surface register programming and hardware execution are unverified.
+
+GFX11 command construction, additional pinned sources:
+
+Linux v6.12 drivers/gpu/drm/amd/amdgpu/soc15d.h
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/soc15d.h
+SHA256 45426641c204f06f54951174ac02a58c9bd49f7b0a7c822eaf984668ba3b8457
+Adapted PM4 type3/count/opcode encoding and SET_SH_REG, SET_UCONFIG_REG,
+NUM_INSTANCES and DRAW_INDEX_AUTO opcodes. AMD copyright 2014 notice below.
+
+Mesa tag mesa-22.3.6, primary upstream repository mirror:
+https://fuchsia.googlesource.com/third_party/mesa/+/refs/tags/gitlab/mesa-22.3.6/
+src/amd/common/sid.h
+SHA256 3a45b53934a2df98e3146a482345a8ca79da10e65ea5bdf911d3f18e31437785
+src/amd/registers/gfx11.json
+SHA256 51ff29c2f239bf6a3e2cf5d8a7dbeef7e40dd915c121fdf04a1a0b42e3223ee8
+src/gallium/drivers/radeonsi/si_build_pm4.h
+SHA256 0fc53672fbb5be015bd8e9b08bf522b714a3d1e504b899b94a589971cf2545be
+src/gallium/drivers/radeonsi/si_state_draw.cpp
+SHA256 0ce9faff7401c9aeedd007ad23922238c734d14ff173863ccfb6c8f45e5fa230
+src/gallium/drivers/radeonsi/si_state_shaders.cpp
+SHA256 b425038c31148af5129ef3e7def02e2e4eac784b939afb22ea939f4e0f2c1775
+Adapted the real nonindexed draw tail and primitive/restart register writes,
+shader program address split, register-space offsets and GFX11 NGG/PS bank
+selection. GFX11 has no legacy vertex pipeline: vertex-only NGG uses the ES
+program address registers and GS user-data bank. No compiled shader, Mesa shader
+compiler, complete NGG/PS resource or render-target setup is copied or invented.
+
+The GFX11 encoder reuses memory::Manager/Slice for trusted GPUVA bounds and read
+permissions, sdma::CommandBuffer for bounded little-endian stores and the shared
+test-only memory backing fixture. It does not bypass leases, expose a raw-packet
+IOCTL, upload code or submit to hardware. Successful encoding proves packet
+construction only. External compiled raw-pointer shader ABI, executable mappings,
+program prefetch padding, full NGG/PS resources/GE subgroup setup/stage enables,
+vertex uploads, color/depth descriptors, interpolation, raster/viewport/scissor,
+cache barriers/chip workarounds, hardware GFX queue, fences and presentation are
+all required before these packet primitives can participate in rendering.
+
+Permission notice for Linux soc15d.h and Mesa sid.h:
+
+Copyright 2014 Advanced Micro Devices, Inc.
+Copyright (C) 2011 Advanced Micro Devices, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Permission notice for RadeonSI draw/shader source:
+
+Copyright 2012 Advanced Micro Devices, Inc.
+All Rights Reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation on the rights
+to use, copy, modify, merge, publish, distribute, sub license, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice (including the next
+paragraph) shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL THE
+AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+GFX11 OpenGL pipeline (gl-pipeline, 2026-10-23): register catalog, state/PM4
+emission, kernel-built graphics submission and the GFX11 GL backend
+(src/opengl/gfx11_registers.hpp, gfx11_state.hpp/.cpp, gl_gfx11_backend.hpp/.cpp,
+src/reactos/process_graphics*.hpp/.cpp). Register offsets, BASE_IDX values and
+field shifts/masks are transcribed from the AMD headers below and re-verified at
+test time (tests/opengl_gfx11_registers_tests.cpp parses them and checks their
+SHA-256). The register programming follows Mesa 24.2.0 RadeonSI's GFX11 paths
+(behaviour adapted into original C++; no Mesa source is compiled in). All files
+are pinned in work/upstream-gpuinit with SHA-256 in its SHA256SUMS:
+
+  gc_11_0_0_offset.h          a2394677509a3415a9e6307d876cae9cd654a99275ab40b3027d983da26801f2
+  gc_11_0_0_sh_mask.h         83dd0060886da2927e3f722b992af208e4d41999b0740123a770a6561f060c94
+  mesa-24.2.0/si_state.c      e4c3f939ea76cb330c4e830c18ab832d121aadbcfeeab667c1bad39bd6aed620
+  mesa-24.2.0/si_state_shaders.cpp 358e8e12f2ba4f7d080d91c00540a1be0335070bf83208c334f1406f9f234d90
+  mesa-24.2.0/si_state_viewport.c fcc19c63aeae3847b0e8200e694445732b608c4ac5e9e692e8457c65df82902e
+  mesa-24.2.0/si_state_binning.c d16f67ba9c367e3645161a358870892290ab0dced61307af704dbd0ce7a2bf18
+  mesa-24.2.0/si_blit.c       61f50b6e8a70ee01f23dbdc0eac9a91f8a5133333651c0f2fa0e00fb2a5079cf
+  mesa-24.2.0/u_blitter.c     155cb06cb71ac0ac5c4c9e3395f268bf62426b104b3507da879f8bda65da3658
+  mesa-24.2.0/ac_descriptors.c f31379766f35cc8d918a41b45ca59f34f6eabadda46de93d84ec5019f802cc01
+  mesa-24.2.0/ac_gpu_info.c   885defc41a8ce8aab03a1c7d08c89062bcf7f22886ccccd4ae6b93cb1fb09ed5
+  mesa-24.2.0/gfx11.json      304b57f399534febbd2b055067b81c2652c700eaea88526a7d10c6bb889bf2fb
+  mesa-24.2.0/pkt3.json       36f5c2eba891df4ba1f85807241d536e8e4cc6787e34328971f071f4cddf0242
+Fetched for this work from https://gitlab.freedesktop.org/mesa/mesa/-/raw/mesa-24.2.0/
+(si_state_binning.c, si_state_viewport.c, si_state_draw.cpp, si_gfx_cs.c, si_pm4.c,
+si_blit.c, src/gallium/auxiliary/util/u_blitter.c, src/amd/registers/pkt3.json);
+si_state.c re-fetched and byte-identical to the pinned copy.
+Adapted behaviour: gfx10_init_gfx_preamble_state (GFX11 branch), attribute-ring
+programming with the bottom-of-pipe PWS wait, CB/DB surface fields
+(ac_init_cb_surface, ac_init_gfx9_ds_surface), blend/DSA/rasterizer state,
+db render state including the GFX11 export-conflict workaround, MSAA-off config,
+guard band, quant mode and scissor rules, dpbb disable, gfx10_shader_ngg and
+si_shader_ps for GFX11, DB->CB depth/stencil copy (si_blit_dbcb_copy), CP DMA_DATA.
+Deviations are documented at their use (SX down-conversion for 32_ABGR exports,
+LATE_Z for killing pixel shaders, no late allocation). Hardware execution is
+unverified.
+
+Permission notice for gc_11_0_0_offset.h and gc_11_0_0_sh_mask.h:
+
+Copyright 2021 Advanced Micro Devices, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+The Mesa sources above carry the RadeonSI MIT notice already preserved in this file.

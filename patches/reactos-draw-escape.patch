@@ -1,0 +1,48 @@
+--- a/win32ss/CMakeLists.txt
++++ b/win32ss/CMakeLists.txt
+@@ -254,6 +254,20 @@
+ endif()
+ 
+ add_importlibs(win32k ntoskrnl hal ftfd)
++# Bounded window DrawEscape delegates native ownership to C++17.
++option(RX7900_FRAMEBUFFER_DRAW_ESCAPE "Enable checked window DrawEscape" OFF)
++set(RX7900_FRAMEBUFFER_DRAW_ESCAPE_SOURCE "" CACHE PATH "RX7900 native C++ source directory")
++if(RX7900_FRAMEBUFFER_DRAW_ESCAPE)
++    if(NOT EXISTS "${RX7900_FRAMEBUFFER_DRAW_ESCAPE_SOURCE}/framebuffer_draw_escape.cpp")
++        message(FATAL_ERROR "RX7900_FRAMEBUFFER_DRAW_ESCAPE_SOURCE must contain framebuffer_draw_escape.cpp")
++    endif()
++    target_sources(win32k PRIVATE "${RX7900_FRAMEBUFFER_DRAW_ESCAPE_SOURCE}/framebuffer_draw_escape.cpp")
++    target_include_directories(win32k PRIVATE "${RX7900_FRAMEBUFFER_DRAW_ESCAPE_SOURCE}")
++    target_compile_definitions(win32k PRIVATE RX7900_FRAMEBUFFER_DRAW_ESCAPE)
++    set_target_properties(win32k PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES
++        WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
++endif()
++
+ add_pch(win32k pch.h SOURCE)
+ add_cd_file(TARGET win32k DESTINATION reactos/system32 FOR all)
+ 
+--- a/win32ss/gdi/ntgdi/device.c
++++ b/win32ss/gdi/ntgdi/device.c
+@@ -7,6 +7,9 @@
+  */
+ 
+ #include <win32k.h>
++#ifdef RX7900_FRAMEBUFFER_DRAW_ESCAPE
++#include "framebuffer_draw_escape.hpp"
++#endif
+ 
+ #define NDEBUG
+ #include <debug.h>
+@@ -51,8 +54,12 @@
+     IN INT cjIn,
+     IN OPTIONAL LPSTR pjIn)
+ {
++#ifdef RX7900_FRAMEBUFFER_DRAW_ESCAPE
++    return LightningDrawEscape(hdc, iEsc, cjIn, pjIn);
++#else
+     UNIMPLEMENTED;
+     return 0;
++#endif
+ }
+ 
+ 

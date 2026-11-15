@@ -1,0 +1,14 @@
+/*
+Module: lightning.reactos.version_metadata
+Purpose: Share accurate package identity across the native Lightning binaries.
+Created: 2026-10-22
+Architecture: Resource metadata only; DriverVer in lightningdisplay.inf matches.
+*/
+#pragma once
+#define REACTOS_FILEVERSION 0,2,0,0
+#define REACTOS_PRODUCTVERSION REACTOS_FILEVERSION
+#define REACTOS_STR_FILE_VERSION "0.2.0.0"
+#define REACTOS_STR_PRODUCT_VERSION REACTOS_STR_FILE_VERSION
+#define REACTOS_STR_COMPANY_NAME "QEMU Lightning development"
+#define REACTOS_STR_PRODUCT_NAME "Lightning NT5 virtual graphics"
+#define REACTOS_STR_LEGAL_COPYRIGHT "ReactOS and QEMU Lightning contributors; see source notices"

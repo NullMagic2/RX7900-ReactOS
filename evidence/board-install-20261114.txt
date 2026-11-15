@@ -1,0 +1,42 @@
+Radeon package on real hardware, 2026-11-14 and 2026-11-15
+
+Machine
+  MSI PRO B650M-P (MS-7E27), Radeon RX 7900 XTX, PCI 1002:744C subsystem
+  1DA2:471E revision C8. ReactOS i386 a97c8a2 booted from a USB stick.
+
+What was run
+  Setup.exe (the wizard) with every option: radeonctl firmware-copy Firmware,
+  then radeonctl install --asic --vbe --2d --2d-compute --cursor --opengl-icd
+  --force-replace vga, then a restart.
+
+What the system recorded (read from the stick's registry afterwards)
+  Installer journal: State 2 (installed), Step "recording", previous service
+  vga, the attached device instance only.
+  Service rx7900video: PhysicalAsicInit 1, VbeModeSet 1, Radeon2D 1,
+  Radeon2DCompute 1, HardwareCursor 1, AtomRomOverride 0.
+  Installed rx7900video.sys, radeondisp.dll and radeonglicd.dll match the
+  package hashes.
+
+What the user saw
+  The driver loaded and the screen resolution could be changed.
+  In a session on 2026-11-15 ReactOS hung when asked to restart. Cause not
+  established; the same USB drivers restart in an emulator, which has no
+  Radeon.
+
+Earlier failures on this machine and their fixes (radeonctl, wizard)
+  - "2 Navi31 GPU functions are present": ReactOS setupapi also lists device
+    records that are not attached. radeonctl now skips an instance whose
+    CM_Get_DevNode_Status reports no such device.
+  - "--rom-override requires a valid rx7900.rom": the wizard offered an
+    option the package could not satisfy. The option was removed from the
+    wizard; it remains a radeonctl switch.
+  - ReactOS went down during an install while the OpenGL file was being
+    copied. Cause of the stop not identified. Found then: ReactOS
+    UpdateDriverForPlugAndPlayDevices also binds unattached records with the
+    same hardware ID. radeonctl now binds exactly one instance and journals
+    each step.
+
+Not established
+  Whether ASIC initialisation, 2D acceleration, the hardware cursor or
+  OpenGL work correctly on the card; any other card or board; behaviour
+  across suspend, hot-unplug or driver removal on real hardware.

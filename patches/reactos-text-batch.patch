@@ -1,0 +1,127 @@
+--- a/win32ss/gdi/ntgdi/freetype.c
++++ b/win32ss/gdi/ntgdi/freetype.c
+@@ -8,6 +8,9 @@
+  */
+ 
+ #include <win32k.h>
++#ifdef RX7900_FRAMEBUFFER_TEXT_BATCH
++#include "framebuffer_text_batch.hpp"
++#endif
+ 
+ #include FT_GLYPH_H
+ #include FT_TYPE1_TABLES_H
+@@ -6714,6 +6717,9 @@
+     const DWORD del = 0x7f, nbsp = 0xa0; // DEL is ASCII DELETE and nbsp is a non-breaking space
+     FONTLINK_CHAIN Chain;
+     SIZE spaceWidth;
++#ifdef RX7900_FRAMEBUFFER_TEXT_BATCH
++    RX7900_TEXT_BATCH_CONTEXT textBatch = {0};
++#endif
+ 
+     /* Check if String is valid */
+     if (Count > 0xFFFF || (Count > 0 && String == NULL))
+@@ -6939,6 +6945,11 @@
+     previous = 0;
+     DoBreak = FALSE;
+     bResult = TRUE; /* Assume success */
++#ifdef RX7900_FRAMEBUFFER_TEXT_BATCH
++    psoDest = Rx7900TextBatchBegin(&textBatch, psoDest, (CLIPOBJ *)&dc->co,
++        (psoDest->iType != STYPE_BITMAP && psoDest->hdev != NULL) ? GDIDEVFUNCS(psoDest).Escape : NULL,
++        (psoDest->iType != STYPE_BITMAP && psoDest->hdev != NULL) ? GDIDEVFUNCS(psoDest).Notify : NULL);
++#endif
+     for (i = 0; i < Count; ++i)
+     {
+         ch0 = *String++;
+@@ -6993,7 +7004,21 @@
++#ifdef RX7900_FRAMEBUFFER_TEXT_BATCH
++            /* Never retain the display semaphore across a FreeType unlock. */
++            if (!Rx7900TextBatchEnd(&textBatch))
++            {
++                bResult = FALSE;
++                break;
++            }
++            psoDest = textBatch.original;
++#endif
+             IntUnLockFreeType();
+             /* Get the width of the space character */
+             TextIntGetTextExtentPoint(dc, TextObj, L" ", 1, 0, NULL, NULL, &spaceWidth, 0);
+             IntLockFreeType();
++#ifdef RX7900_FRAMEBUFFER_TEXT_BATCH
++            psoDest = Rx7900TextBatchBegin(&textBatch, psoDest, (CLIPOBJ *)&dc->co,
++                (psoDest->iType != STYPE_BITMAP && psoDest->hdev != NULL) ? GDIDEVFUNCS(psoDest).Escape : NULL,
++                (psoDest->iType != STYPE_BITMAP && psoDest->hdev != NULL) ? GDIDEVFUNCS(psoDest).Notify : NULL);
++#endif
+             glyphSize.cx = spaceWidth.cx;
+             realglyph->left = 0;
+         }
+@@ -7054,6 +7079,21 @@
+                 }
+             }
+ 
++#ifdef RX7900_FRAMEBUFFER_TEXT_BATCH
++            /* The private helper submits owned coverage or synchronizes the
++             * original engine bitmap before an exact CPU fallback. */
++            ULONG glyphResult = Rx7900TextBatchGlyph(&textBatch, psoGlyph,
++                (CLIPOBJ *)&dc->co, &DestRect, (PPOINTL)&MaskRect,
++                &dc->eboText.BrushObject);
++            if (glyphResult == RX7900_TEXT_GLYPH_FAILED)
++            {
++                bResult = FALSE;
++                DoBreak = TRUE;
++            }
++            if (glyphResult == RX7900_TEXT_GLYPH_UNSUPPORTED)
++            {
++                Rx7900TextBatchRecord(&textBatch, &DestRect);
++#endif
+             if (!IntEngMaskBlt(psoDest,
+                                psoGlyph,
+                                (CLIPOBJ *)&dc->co,
+@@ -7065,7 +7105,14 @@
+                                &g_PointZero))
+             {
+                 DPRINT1("Failed to MaskBlt a glyph!\n");
+-            }
++#ifdef RX7900_FRAMEBUFFER_TEXT_BATCH
++                bResult = FALSE;
++                DoBreak = TRUE;
++#endif
++            }
++#ifdef RX7900_FRAMEBUFFER_TEXT_BATCH
++            }
++#endif
+ 
+             EngUnlockSurface(psoGlyph);
+             EngDeleteSurface((HSURF)hbmGlyph);
+@@ -7102,6 +7149,11 @@
+ 
+         previous = glyph_index;
+     }
++#ifdef RX7900_FRAMEBUFFER_TEXT_BATCH
++    if (!Rx7900TextBatchEnd(&textBatch))
++        bResult = FALSE;
++    psoDest = textBatch.original;
++#endif
+     /* Don't update position if String == NULL. Fixes CORE-19721. */
+     if ((pdcattr->flTextAlign & TA_UPDATECP) && String)
+         pdcattr->ptlCurrent.x = DestRect.right - dc->ptlDCOrig.x;
+diff --git a/win32ss/CMakeLists.txt b/win32ss/CMakeLists.txt
+index 2986b376..7d6d10c5 100644
+--- a/win32ss/CMakeLists.txt
++++ b/win32ss/CMakeLists.txt
+@@ -250,2 +250,16 @@ add_pch(win32k pch.h SOURCE)
+ set_module_type(win32k kernelmodedriver)
++# Optional engine text batching reuses the RX7900 cached surface through a
++# kernel-only notification; default ReactOS rendering is unchanged.
++option(RX7900_FRAMEBUFFER_TEXT_BATCH "Batch glyph uploads for Lightning GDI" OFF)
++set(RX7900_FRAMEBUFFER_TEXT_BATCH_SOURCE "" CACHE PATH "RX7900 native C++ source directory")
++if(RX7900_FRAMEBUFFER_TEXT_BATCH)
++    if(NOT EXISTS "${RX7900_FRAMEBUFFER_TEXT_BATCH_SOURCE}/framebuffer_text_batch.cpp")
++        message(FATAL_ERROR "RX7900_FRAMEBUFFER_TEXT_BATCH_SOURCE must contain framebuffer_text_batch.cpp")
++    endif()
++    target_sources(win32k PRIVATE "${RX7900_FRAMEBUFFER_TEXT_BATCH_SOURCE}/framebuffer_text_batch.cpp")
++    target_include_directories(win32k PRIVATE "${RX7900_FRAMEBUFFER_TEXT_BATCH_SOURCE}")
++    target_compile_definitions(win32k PRIVATE RX7900_FRAMEBUFFER_TEXT_BATCH)
++    set_target_properties(win32k PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES
++        WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
++endif()
+ target_link_libraries(win32k ${PSEH_LIB} dxguid libcntpr)

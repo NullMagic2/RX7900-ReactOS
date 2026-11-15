@@ -1,0 +1,215 @@
+Module: rx7900.licenses.amdgpu_output
+Purpose: Preserve Linux EDID attribution and exact output adaptation boundaries.
+Created: 2026-10-21
+Architecture: src/output/sink.cpp decodes sink candidates for display::ModeCatalog.
+
+DisplayPort receiver and EDID transport addition (src/output/dp_link.cpp):
+https://github.com/torvalds/linux/blob/v6.12/include/drm/display/drm_dp.h
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/display/drm_dp_helper.c
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/i915/display/intel_dp_link_training.c
+Adapted: legacy 8b/10b DPCD receiver fields, the 16-byte AUX payload limit,
+bounded AUX DEFER retries, I2C-over-AUX EDID offset/segment transactions and
+short-transfer rejection. The new C++ code reuses the existing strict EDID
+decoder and mode budget instead of copying Linux runtime, packed structs or
+kernel I2C/DRM services. A native DCN owner must still supply real bounded AUX,
+HPD, PHY and source-capability callbacks. Downstream branches, 128b/132b
+training and unverified RGB8 paths are refused; MST capability is recorded but
+an SST backend must disable and verify MST mode. No link is trained or enabled.
+src/output/dp_training.cpp now implements bounded 8b/10b SST clock recovery and
+channel equalization over those callbacks, including source/sink pattern setup,
+per-lane adjustment requests, RBR/HBR/HBR2 and HBR3 with verified TPS4
+(scrambling left enabled for TPS4),
+confirmed pattern disable and unknown-state
+containment. No native Navi31 AUX/PHY callback is wired, so no physical link has
+been trained by this project. LTTPR, DSC and multi-stream training
+remain outside the supported policy.
+Linux v6.12 dce_aux.c binds AUX to an owned DDC pin and a DC resource-engine
+instance, then sequences AUX_SW_CONTROL/DATA, completion, reply and timeout
+state. The new dp_port_native bridge requires that real routing and resource
+ownership proof before using any callback. It does not substitute ATOM GPIO
+indices for BAR5 offsets or issue these register writes without the matching
+DCN3.2 AUX/HPD service:
+https://github.com/torvalds/linux/blob/v6.12/drivers/gpu/drm/amd/display/dc/dce/dce_aux.c
+src/output/dcn32_aux.cpp adapts that pinned software-engine arbitration,
+bounded engine enable/reset, SW request/reply staging and completion/release sequence for five
+DCN3.2 AUX register banks. Register indices and field masks come from
+https://github.com/torvalds/linux/blob/v6.12/drivers/gpu/drm/amd/include/asic_reg/dcn/dcn_3_2_0_offset.h
+https://github.com/torvalds/linux/blob/v6.12/drivers/gpu/drm/amd/include/asic_reg/dcn/dcn_3_2_0_sh_mask.h
+The native adapter binds only under external exact DDC GPIO, AUX clock/PHY,
+DMUB, HPD and register-epoch proof. It does not configure these prerequisites
+or bind the physical miniport's connector; no mode is advertised. Uncertain
+completion or arbitration release quarantines the engine. Copyright 2012-15
+Advanced Micro Devices, Inc. for the dce_aux.c-derived sequence; the AMD
+permissive notice reproduced for atom_connectors.cpp below also applies.
+The drm_dp.h and drm_dp_helper.c files carry the following permissive notice,
+retained for the adapted
+protocol policy (drm_dp.h: Copyright 2008 Keith Packard;
+drm_dp_helper.c: Copyright 2009 Keith Packard):
+Permission to use, copy, modify, distribute, and sell this software and its
+documentation for any purpose is hereby granted without fee, provided that the
+above copyright notice appear in all copies and that both that copyright notice
+and this permission notice appear in supporting documentation, and that the name
+of the copyright holders not be used in advertising or publicity pertaining to
+distribution of the software without specific, written prior permission. The
+copyright holders make no representations about suitability for any purpose and
+provide the software as is, without express or implied warranty. In no event
+shall the copyright holders be liable for damages arising from use or performance.
+
+Additional Linux v6.12 ATOM connector-routing adaptations:
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/display/dc/bios/bios_parser2.c
+SHA-256 9acf663d2296b74f3e4f444e7589f1fde376ea4a3966265c2b657d016bd20904
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/atomfirmware.h
+SHA-256 95d7856f6449579faf3983760f2d9f4a171327cac431d968b6625bbe38e5e49a
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/ObjectID.h
+SHA-256 8f5a5dc001686ddae347332547f8767b83f33981a953877b95fabd8ca1313d4a
+
+src/output/atom_connectors.cpp adapts BIOS parser2 ROM/master-data table lookup,
+display object-info1.4/1.5 path traversal, skipping generic paths without an
+encoder, I2C/HPD connector records and GPIO LUT matching. The checked parser
+supports ROM2.2/master-data2.1, limits topology to 32 paths, validates complete
+table extents, preserves 32-bit GPIO register indices instead of truncating
+them, and rejects duplicate routing/ambiguous records, invalid GPIO shifts,
+record cycles/nonprogress and paths/records escaping their owning tables.
+Missing DDC/HPD/GPIO information stays explicitly unresolved. Connector object
+IDs identify HDMI-A/DP/eDP/USB-C routing only; no monitor, trained link, register
+address-space resolution or physical display initialization is invented.
+No ATOM command interpreter, allocation, register write or firmware execution
+is copied or performed by the parser.
+
+Copyright 2012-15 Advanced Micro Devices, Inc. (bios_parser2.c)
+Copyright 2014 Advanced Micro Devices, Inc. (atomfirmware.h)
+Copyright 2006-2007 Advanced Micro Devices, Inc. (ObjectID.h)
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+Linux v6.12 sources, downloaded unmodified on 2026-10-21:
+
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/drm_edid.c
+SHA-256 1d042133c26d43abff917cd2dd3d0bf7694baa2188e84326e03161381dc1d9f8
+Adapted: exact edid_header bytes, EDID modulo-256 block checksum validation,
+drm_mode_detailed field extraction and 10-kHz clock scaling, minimum active
+dimensions of 64, digital separate sync polarities, and
+cea_for_each_detailed_block traversal bounded before the checksum byte.
+CTA extended tag HF-EEODB=0x78 is detected and explicitly unsupported because
+its block-count override has not been implemented. The EDID blob must exactly
+match its base-declared length. No header repair, checksum forgiveness, EDID
+quirks, silent sync clamping or partial corrupt-block acceptance are adapted.
+
+https://raw.githubusercontent.com/torvalds/linux/v6.12/include/drm/drm_edid.h
+SHA-256 be7f3d00c6e89583213f866c010ee41ef777f0cc6af32ca45758d81cefe88fb3
+Adapted: detailed_pixel_timing byte positions and EDID digital depth encoding.
+Physical bytes are decoded only through the project's checked ByteView rather
+than Linux packed structs or native pointers. Stereo, borders, interlace and
+composite sync are rejected. RGB8 requires independent verified link evidence;
+unknown EDID depth does not establish RGB8 support.
+
+Research-only AMD Display Core/DCN3.2 sources; no implementation copied:
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/display/dc/link/link_detection.c
+SHA-256 b28962c8912ef14a84ad31924a2f294da2f33115b592228a999ee49539e084ef
+get_ddc_transaction_type selects I2C for HDMI/DVI and I2C-over-AUX for DP/eDP;
+link_detect_sink requires physical sink detection, DPCD/capabilities and EDID
+transport rather than manufacturing a connector from PCI identification.
+
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/display/dc/resource/dcn32/dcn32_resource.c
+SHA-256 42a107ed6f5086298344b84a5ad3dd227dc35c6b9ac06f93942ed70d11d92deb
+DCN3.2 constructs separate link encoders, timing generators, DDC/AUX resources,
+clock/bandwidth machinery and DMUB-related services. EDID parsing and an inert
+AUX register adapter alone cannot initialize physical output. No firmware
+operation or physical GPU access was performed during development.
+
+Implementation scope: strict EDID 1.3/1.4 base blocks and CTA revisions 1..3,
+at most eight complete blocks; at most 46 DTD candidates use the existing
+64-mode catalog. A malformed/unsupported DTD is counted and omitted. Unknown
+extensions are counted and not interpreted. Established/standard timings,
+CTA short-video VICs, DisplayID, range inference, quirks, HDR, VRR, DSC, audio,
+HDMI FRL, DP MST and physical transport/PHY integration are not implemented. A zero-mode
+snapshot is valid discovery data and never a working output claim. The new DP
+link policy can acquire EDID only through an owner-supplied AUX callback; the
+native AUX register adapter is built but is not connected to a proven physical
+connector/clock owner. It never enumerates connectors,
+trains a link, performs a physical modeset or reports a physical display
+operation successful. Its pure output validation
+checks RGB8 pixel clock and a caller-verified usable payload budget, then returns
+an existing display::Timing. ModeController/ModeBackend own scanout validation
+and actual hardware commit. Missing capabilities fail explicitly.
+
+drm_edid.c notice:
+
+Copyright (c) 2006 Luc Verhaegen (quirks list)
+Copyright (c) 2007-2008 Intel Corporation
+  Jesse Barnes <jesse.barnes@intel.com>
+Copyright 2010 Red Hat, Inc.
+
+DDC probing routines (drm_ddc_read & drm_do_probe_ddc_edid) originally from
+FB layer.
+  Copyright (C) 2006 Dennis Munsie <dmunsie@cecropia.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sub license,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice (including the
+next paragraph) shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+drm_edid.h notice:
+
+Copyright (c) 2007-2008 Intel Corporation
+  Jesse Barnes <jesse.barnes@intel.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+Additional Linux v6.12 adaptations, 2026-10-24 (DCN 3.2 display link owner; same AMD
+MIT-style notice as above): connector routes and DDC pads (link_factory.c, bios_parser2.c,
+gpio/dcn32/hw_translate_dcn32.c, gpio/hw_gpio.c, gpio/hw_ddc.c, gpio/ddc_regs.h), DIO link
+encoder and VBIOS PHY tables (dio/dcn32/dcn32_dio_link_encoder.c, dio/dcn10/dcn10_link_encoder.c,
+bios/command_table2.c, bios/dce112/command_table_helper2_dce112.c), DC_I2C and SCDC
+(dce/dce_i2c_hw.c, link/protocols/link_ddc.c), clocks (clk_mgr/dcn32/dcn32_clk_mgr.c,
+dcn32_clk_mgr_smu_msg.c, dalsmc.h, clk_mgr_internal.h, dccg/dcn20/dcn20_dccg.c,
+dccg/dcn32/dcn32_dccg.c, dce/dce_clock_source.c) and DMCUB (dmub/src/dmub_srv.c,
+dmub/src/dmub_dcn32.c, dmub/inc/dmub_cmd.h), all under
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/display/dc/ and
+.../display/dmub/. Rewritten in bounded C++17; no source text is copied.

@@ -1,0 +1,118 @@
+; Module: rx7900.reactos.radeon_display_package
+; Purpose: Bind one physical Navi31 GPU to rx7900video and the radeondisp DDI.
+; Created: 2026-10-24
+; Architecture: Installed only by an explicit radeonctl install. Demand start,
+; every miniport opt-in 0 (safe), no filters, no OpenGL registration (the
+; RadeonGL ICD is a separate radeonctl --opengl-icd opt-in). The model IDs are
+; the src/common/pci.hpp navi31_device_ids GPU functions; the card's USB and
+; HDMI/DP audio functions never match.
+[Version]
+Signature="$Windows NT$"
+Class=Display
+ClassGuid={4D36E968-E325-11CE-BFC1-08002BE10318}
+Provider=%Provider%
+DriverVer=10/24/2026,0.1.0.0
+
+[Manufacturer]
+%Provider%=Models,NTx86,NTamd64
+
+[Models.NTx86]
+%Navi31.7448%=Install,PCI\VEN_1002&DEV_7448
+%Navi31.744A%=Install,PCI\VEN_1002&DEV_744A
+%Navi31.744B%=Install,PCI\VEN_1002&DEV_744B
+%Navi31.744C%=Install,PCI\VEN_1002&DEV_744C
+%Navi31.745E%=Install,PCI\VEN_1002&DEV_745E
+
+[Models.NTamd64]
+%Navi31.7448%=Install,PCI\VEN_1002&DEV_7448
+%Navi31.744A%=Install,PCI\VEN_1002&DEV_744A
+%Navi31.744B%=Install,PCI\VEN_1002&DEV_744B
+%Navi31.744C%=Install,PCI\VEN_1002&DEV_744C
+%Navi31.745E%=Install,PCI\VEN_1002&DEV_745E
+
+[DestinationDirs]
+MiniportFiles=12
+DisplayFiles=11
+
+[Install.NT]
+CopyFiles=MiniportFiles,DisplayFiles
+
+[Install.NTx86]
+CopyFiles=MiniportFiles,DisplayFiles
+
+[Install.NTamd64]
+CopyFiles=MiniportFiles,DisplayFiles
+
+[Install.SoftwareSettings]
+AddReg=DisplaySettings
+
+[Install.NT.SoftwareSettings]
+AddReg=DisplaySettings
+
+[Install.NTx86.SoftwareSettings]
+AddReg=DisplaySettings
+
+[Install.NTamd64.SoftwareSettings]
+AddReg=DisplaySettings
+
+[DisplaySettings]
+HKR,,InstalledDisplayDrivers,0x00010000,"radeondisp"
+HKR,,VgaCompatible,0x00010001,0
+
+[Install.NT.Services]
+AddService=rx7900video,0x00000002,DisplayService
+
+[Install.NTx86.Services]
+AddService=rx7900video,0x00000002,DisplayService
+
+[Install.NTamd64.Services]
+AddService=rx7900video,0x00000002,DisplayService
+
+; StartType=3 (demand): never boot or system start. ErrorControl=0: a failed
+; experimental display never stops boot; ReactOS keeps its fallback display.
+[DisplayService]
+DisplayName=%ServiceName%
+ServiceType=1
+StartType=3
+ErrorControl=0
+ServiceBinary=%12%\rx7900video.sys
+LoadOrderGroup=Video
+AddReg=ServiceSettings
+
+; VideoPort reads these through VideoPortGetRegistryParameters (Device0). Each
+; opt-in is honoured only as REG_DWORD 1; the INF always writes the safe 0 and
+; radeonctl install writes 1 only for the features named on its command line.
+[ServiceSettings]
+HKR,Video,Service,0x00000000,"rx7900video"
+HKR,Device0,Device Description,0x00000000,%ServiceName%
+HKR,Device0,InstalledDisplayDrivers,0x00010000,"radeondisp"
+HKR,Device0,VgaCompatible,0x00010001,0
+HKR,Device0,PhysicalAsicInit,0x00010001,0
+HKR,Device0,AtomRomOverride,0x00010001,0
+HKR,Device0,VbeModeSet,0x00010001,0
+HKR,Device0,Radeon2D,0x00010001,0
+HKR,Device0,Radeon2DCompute,0x00010001,0
+HKR,Device0,HardwareCursor,0x00010001,0
+
+[MiniportFiles]
+rx7900video.sys
+
+[DisplayFiles]
+radeondisp.dll
+
+[SourceDisksNames]
+1=%Media%
+
+[SourceDisksFiles]
+rx7900video.sys=1
+radeondisp.dll=1
+
+[Strings]
+Provider="RX7900-ReactOS development"
+ServiceName="AMD Radeon RX 7900 (Navi31) experimental display"
+Media="RX7900 physical Radeon development package"
+Navi31.7448="AMD Radeon PRO W7900 (Navi31, experimental)"
+Navi31.744A="AMD Radeon PRO W7900 Dual Slot (Navi31, experimental)"
+Navi31.744B="AMD Radeon PRO W7900D (Navi31, experimental)"
+Navi31.744C="AMD Radeon RX 7900 XT/XTX/GRE (Navi31, experimental)"
+Navi31.745E="AMD Radeon PRO W7800 (Navi31, experimental)"

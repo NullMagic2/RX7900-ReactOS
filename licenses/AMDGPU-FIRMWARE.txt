@@ -1,0 +1,501 @@
+Module: rx7900.licenses.amdgpu_firmware
+Purpose: Preserve AMD firmware container attribution and adaptation boundaries.
+Created: 2026-10-21
+Architecture: firmware.cpp validates metadata; psp_boot.cpp executes a narrow
+native-owned PSP13.0.0 bootloader protocol with retained staging ownership.
+vram_discovery/nbio/ucode/psp_ring/smu13/asic_init implement physical Navi31
+ASIC initialization protocols; all were tested only against synthetic devices.
+
+Linux baseline: v6.12, downloaded unmodified on 2026-10-21.
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_ucode.h
+SHA-256 70b96909458c6e43a7376638f0ee6dbe88e76dc80baa660f7e377234f1f1936b
+Adapted common_firmware_header, sdma_firmware_header_v2_0,
+psp_firmware_header_v2_0, psp_fw_bin_desc, dmcub_firmware_header_v1_0.
+All byte positions are decoded through ByteView, without packed struct casts.
+
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_ucode.c
+SHA-256 e2a2794aca1f4455c058493abd044b83140c913f4b664a5766133fc7decbbf10
+Adapted exact total-file-length rule and the SDMA thread payload interpretation
+in amdgpu_ucode_init_single_fw. Added bounded headers, IP/version checks, part
+overlap/duplicate rejection and transactional output. The header CRC field is
+retained but not verified; it is not a standard full-payload CRC32 convention.
+Parsing does not establish authenticity. PSP signature verification is required.
+
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_psp.c
+SHA-256 1e73faa87fc8fe3456a054973bc87265fc3c7827904189563f6825b42362ee25
+Adapted parse_sos_bin_descriptor payload-relative offsets and PSP firmware IDs.
+Only SOS packaging header2.0 is accepted; auxiliary header2.1 is unsupported.
+
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/psp_v13_0.c
+SHA-256 532d5cf09cb139c969760dd750bbd866e9fcce0f165b96977ec496cdc4f0de35
+Adapted PSP13.0.0 component/SOS bootloader mailbox commands, exact READY word,
+MC staging address units, secure-OS life/version observations and 20 ms SOS
+settling interval. The pinned load_spl path supplies the KDB descriptor; the
+adaptation preserves and explicitly reports that payload choice instead of
+substituting the SPL descriptor. Other PSP generations, memory training,
+TMR/TA/runtime firmware command rings and authentication policy remain separate.
+
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_psp.h
+SHA-256 2eb1c2a2d7846c8053663510b4d09f2b4e567a78f2133be0242dc854bf21041a
+Adapted bootloader command values and the 1 MiB staging size/alignment contract.
+amdgpu_psp.c additionally supplies the boot order, GTT/VRAM staging ownership
+and bounded 1 us polling algorithm. The Linux no_hw_access success shortcut is
+deliberately omitted. Optional IPKEYMGR packaging is rejected because the pinned
+PSP13 function table supplies no corresponding bootloader callback.
+
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/mp/mp_13_0_2_offset.h
+SHA-256 125a2b4d33e97b8a4a8bd1d9d3622582544d03285b733b5e5a1ca3fbf91e2f38
+Adapted MP0 C2PMSG35/36/58/81 dword offsets and segment0 indices. Native code
+must independently establish the MP0 hardware IP/version/base and PSP-visible
+MC/GTT staging mapping; raw CPU DMA or BAR addresses cannot substitute for them.
+PspRegisters now requires the shared checksummed IP-discovery factory: exactly
+one MP0 hardware-ID255 instance0 IP13.0.0/subrevision0 record, local segment0
+and sufficient assigned BAR register extent. The GC/GFXHUB validator reuses the
+same binary/table checksum and bounded die/IP traversal implementation.
+
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_discovery.c
+SHA-256 7e76881acf9b9165607acd59b338970cb7007862a3152e0c612a19d6e459e7c2
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/discovery.h
+SHA-256 bd64513b3397e3b2633a0a3e45e95a546b26dd5789f30d1a902a8b415528c8d3
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/soc15_hw_ip.h
+SHA-256 34a04ab0e1411f4833f2d2676ffd4c5b4b301b9bdef9d1f242adb89105bc733f
+Adapted binary/table signatures, byte-sum checksum rules, IP3/4 local address
+formats, die/IP record layouts and MP0/GC hardware IDs into discovery.cpp.
+Native acquisition and device binding of discovery bytes are still required.
+All hardware operations remain unverified on a physical card. Synthetic test
+register responses establish protocol behavior only, never real authentication.
+
+Physical Navi31 ASIC initialization, added 2026-10-21 (same v6.12 baseline):
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_discovery.h
+SHA-256 ae107185da839b6edda6af07cb112e9ae463c3cf6c135d3288acfba343c35cf3
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
+SHA-256 21aad0f99d79228ec510027bef536e28f935dd401d8f2d2dc3c105c88adb260a
+vram_discovery.cpp adapts amdgpu_discovery_read_binary_from_mem (IFWI C2PMSG_33
+wait, RCC_CONFIG_MEMSIZE, 10 KiB at 64 KiB below VRAM top), the fixed SOC15
+indices and amdgpu_device_mm_access, plus psp_get_runtime_db_entry from
+amdgpu_psp.c/.h (cookie, directory, boot-config and SCPM entries). The ACPI
+system-memory fallback is APU-only and omitted. nbio.cpp adapts the
+amdgpu_device_rreg/wreg aperture rule and indirect RSMU access.
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/nbio_v4_3.c
+SHA-256 225f72c777a0036bb54bde68498118dc30230318908c1922798ccbc1b520be46
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/nbio_v4_3.h
+SHA-256 57c1648c1c9c2855532f13c264d9effdb2273053f8bdc659952b40760f7698c3
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/nbio/nbio_4_3_0_offset.h
+SHA-256 8d76c511512e3a8e82ef527b6f528fba819dd00b351a9892dde61c8537247ca6
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/nbio/nbio_4_3_0_sh_mask.h
+SHA-256 18df5043b0a75e29054a87b709236dbbf9002b9b28c459d468c8e465fd03f1db
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/hdp_v6_0.c
+SHA-256 b9cb4c7e6186dac8e6deb2b3ace05f8088004d034b08976eefc7a0acc23b3a02
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/hdp/hdp_6_0_0_offset.h
+SHA-256 806a2c1cc80813d22b9ec25da9af8ca9d4a7eb7c0fc5ec0f62d1ea25ae256c72
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/soc21.c
+SHA-256 b1759a26266ea56fdd7344a7f588ab2d461c034abcfa187147249c268db5b21d
+https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/linux/kfd_ioctl.h
+SHA-256 aa02e0c7158c999413b0c548deab23930818a80bf28c267c0c3f2a18f5342735
+nbio.cpp adapts nbio_v4_3_init_registers (function2 strap), remap_hdp_registers,
+set_reg_remap (BAR5 hole 0x80000-PAGE_SIZE), the KFD remap offsets and
+hdp_v6_0_flush_hdp. ASPM, doorbell and clock-gating programming are not adapted.
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/mmhub_v3_0.c
+SHA-256 2722b210513424f324d8cb84fe65ead1795da649112d61770bf70a2302de3ef3
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/mmhub/mmhub_3_0_0_offset.h
+SHA-256 b0ddff6c2f9f36ce4708d5a6ad3e66c4b8ce565cb68a141323f4556ce6f5315c
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/mmhub/mmhub_3_0_0_sh_mask.h
+SHA-256 698478e5ecacad56385ccb1206ded5496f5983d28ce2f637e94fd84e757760c2
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/gmc_v11_0.c
+SHA-256 cf80c3fc65560defb24e161bd6578f857475f98ad0855e623c8d78beeb583bf4
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_gmc.c
+SHA-256 601900e6d316151c18bd4ea5c27cbcd640ab6a8ee5babcdc0ecc7565918014f9
+nbio.cpp adapts get_fb_location/get_mc_fb_offset and gmc_v11_0 VRAM placement;
+psp_ring.cpp adapts amdgpu_gmc_vram_mc2pa for the SETUP_TMR physical address.
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/psp_gfx_if.h
+SHA-256 8cea949f406c78f545eb6ad9b65ccc0f007c368f0776a5d04c04cea8cc95ce34
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/mp/mp_13_0_0_offset.h
+SHA-256 4a13a703b649d4f323928c00e57de91571f4aea087c60c93d90353054a513d51
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/mp/mp_13_0_0_sh_mask.h
+SHA-256 2d14c396ade643b421dd1d8918bc5eaf46f01a61bf502c92d0c003398f5c7d7e
+psp_ring.cpp adapts psp_v13_0 ring create/stop/wptr, psp_ring_init,
+psp_ring_cmd_submit, psp_cmd_submit_buf, psp_copy_fw and the LOAD_TOC,
+SETUP_TMR, LOAD_IP_FW, AUTOLOAD_RLC, LOAD_ASD, RL and DESTROY_TMR command
+encodings and frame/response layouts. Linux's warn-only nonzero response status
+is changed to a reported fail-closed result. asic_init.cpp adapts psp_load_fw,
+psp_hw_start, psp_tmr_init, psp_load_smu_fw, fw_load_skip_check and
+psp_load_non_psp_fw ordering. XGMI and the RAS/HDCP/DTM/RAP/secure-display TAs
+are not adapted; two-stage DRAM training is listed with the additions below.
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_rlc.c
+SHA-256 b8e36f4d904cf8bcc22647b93752acf9fbaedad4780c40f7e2b62235f5fc8491
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_mes.c
+SHA-256 cf87a3579eab57bb46a973415d22bc53db4bae1a3ee204cdb8314ace878c7eb9
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_gfx.c
+SHA-256 69fd4ff9897da63bb59de20693fa44333b716e591800a9500f3516a31de73133
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_sdma.c
+SHA-256 ca7aaf78704e530fe0b211699ba585f555e8c0c944b97ab8ac85a2d2e042de2b
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/gfx_v11_0.c
+SHA-256 74dc38ba2d48b1e43db0bec0706a53385fb2f083b273a8f8f4ee2da5d3e06317
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/imu_v11_0.c
+SHA-256 3e7c520a24041e3c87c7057f5baddcbecb218945d5d9a0599de59c849d3f1ba7
+ucode.cpp adapts gfx/rlc v2.0-2.4/mes/imu/smc firmware header layouts from
+amdgpu_ucode.h, amdgpu_ucode_init_single_fw payload selection, psp_get_fw_type,
+the AMDGPU_UCODE_ID load order, RS64 selection, rlc_1/mes_2 file naming and the
+TA2.0 ASD descriptor. Real host gc_11_0_0/smu_13_0_0/sdma_6_0_0/dcn_3_2_0/
+psp_13_0_0 files decode with contiguous in-bounds payloads; they are not shipped.
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/pm/swsmu/smu13/smu_v13_0.c
+SHA-256 ee3f6e2f7d5368bd3b1967c59b682087cd4c3bfc663e5a0f489320cc2f3dab67
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/pm/swsmu/inc/smu_v13_0.h
+SHA-256 3522eed7ea4a8426fcac1e61293f9c44a96410a804e63bd1a2907322d80a46f9
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/pm/swsmu/smu13/smu_v13_0_0_ppt.c
+SHA-256 05f633119f0f9333371a17e2fb7032b1a10ac332eadc3404c34146910d807935
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/pm/swsmu/inc/pmfw_if/smu_v13_0_0_ppsmc.h
+SHA-256 bd5e5dfb7e65cd6c985e13afd42e41ec2881aa923310a48e32a7179fc298fa38
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/pm/swsmu/inc/pmfw_if/smu13_driver_if_v13_0_0.h
+SHA-256 bf54808b8033b9a7cc5e568fbb3043394e5c31d8ff15962ef7a68f4f6c5a985b
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/pm/swsmu/smu_cmn.c
+SHA-256 02d5ec0a2359ad4f12cc09bfa2dbe5b340d8d895481e1d4e03062888a4555921
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/pm/swsmu/inc/smu_types.h
+SHA-256 8d81f056437308c6754f8db4b5af9bcebb813be270f870ebf9a7c7e842fa3869
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/pm/swsmu/amdgpu_smu.c
+SHA-256 f9fa9ec360ddccea7371bd0e1d3cab657af0c1dcb237b762657c2aace60af27e
+smu13.cpp adapts the C2PMSG_66/82/90 mailbox, response codes, first-message rule,
+hang state, check_fw_status/check_fw_version, driver/tool table location and
+EnableAllSmuFeatures. Table sizes were measured from the pinned driver interface
+header (largest transfer table COMBO_PPTABLE 0x4000). PPTable setup, BTC, allowed
+features, PCIe and thermal alert are listed with the additions below.
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_atomfirmware.c
+SHA-256 f34cae273f419bb0ca4cad31e356ba9ef1359dbd6ce4b484549b3320f2c46772
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_ttm.c
+SHA-256 cee0f8235487041969269274f79b8e1f12f44c89cd5622bcd390e56ae027e2d2
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu.h
+SHA-256 5c53aa4ffb811ff17284223c5dc497abece1285d616a10f1a6ab80d7e4f93c2c
+Consulted for the two-stage training capability rule and SMU/PSP sizing; training
+runs where Linux would run it and the sequencer refuses when firmwareinfo is absent.
+
+
+Physical Navi31 ASIC initialization additions (GMC, IH, SMU power play, GFX core,
+MES, SDMA), 2026-10-21:
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/atomfirmware.h
+SHA-256 95d7856f6449579faf3983760f2d9f4a171327cac431d968b6625bbe38e5e49a
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/amd_shared.h
+SHA-256 ea11b6838d25c7cf28c93ac1bf0bd98e33d7804efc114cf3ac5f2a867effede6
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/pm/swsmu/inc/smu_v13_0_0_pptable.h
+SHA-256 1ebd8f9208e77958a75a6b8155191a0a96bda5c4b994c63dff447bf5ff022726
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/pm/swsmu/inc/amdgpu_smu.h
+SHA-256 5e4a8a2f73f3efb41f1682544aa59ff9317677d36132bbb035a023765a286f15
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/thm/thm_13_0_2_offset.h
+SHA-256 fad4fcad41b654a4604c87af6bf4aeab7970a62daf2468363d819e2e9e9c6141
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/thm/thm_13_0_2_sh_mask.h
+SHA-256 29442ed57039619af396db1e3eaeb3700e1777557b335d74bec71a0d5f0b324f
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/mp/mp_13_0_2_sh_mask.h
+SHA-256 f8dd23d812a6c34b55c39e6668ea5869e4c20f18ff1e81e2e40bec405a8a7cb0
+atom_firmware.cpp adapts amdgpu_atomfirmware_get_vram_info/firmwareinfo capability and
+reserved-FB decoding, the ATOM_FIRMWARE_CAP_ENABLE_2STAGE_BIST_TRAINING rule,
+get_vbios_bootup_values (firmwareinfo and smu_info v3.6/v4.0 boot clocks) and
+smc_dpm_info BoardTable lookup. smu13.cpp adapts smu_v13_0_0_setup_pptable,
+append/store/check_powerplay_table, run_btc, get_allowed_feature_mask (default
+ppfeaturemask), set_default_dpm_table with set_single_dpm_table (GetDpmFreqByIndex,
+GameClockAc cap at measured PPTable offset 2782), update_pcie_parameters, get_thermal_temperature_range,
+set_irq_state(ENABLE) and process_pending_interrupt. smu_13_0_0_powerplay_table
+offsets (platform_caps 18, software_shutdown_temp 29, PPTable_t 832, BoardTable
+3484) were measured by compiling the pinned headers. Clocks, power limits, fan
+control, OD, metrics and the thermal/AC-DC interrupt handlers are not adapted.
+THM instance0 13.0.3 and the MP1/GC/SDMA bases were compared with the board's
+read-only sysfs ip_discovery listing.
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_gart.c
+SHA-256 952d8d8ae8e03936b87ccddcc6157ff8c5d45009071e8ea98cbacb0006f889a7
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_vm.c
+SHA-256 9cbc7f31202ebba74e17fd80ccb442e739b58eace0b588d4e39b8a5e1baa62e1
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/soc15.c
+SHA-256 7823cb26b5282781d5e2ef10224018296062a97773318617ce0c25cef4a47622
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/soc15.h
+SHA-256 234f60fba0495e39eb0371f1dff530f677d1da7f923d8096d7e8573a6fc0f5ec
+gmc11.cpp and vmhub_layout.hpp adapt gmc_v11_0 sw/hw_init, amdgpu_gart table and
+dummy-page setup, mmhub_v3_0/gfxhub_v3_0 gart_enable, VM context/fault/L2 setup and
+flush_gpu_tlb with semaphore and ACK. GART uses a VRAM table; missing ACKs fail
+closed. psp_training.cpp adapts psp_v13_0_memory_training (long training with
+bottom-of-VRAM save/restore).
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/ih_v6_0.c
+SHA-256 11f02adafa6a90f256e35209917ee0fb2898296cd998c749a8ebb4a9c3f19a84
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/ih_v6_0.h
+SHA-256 e5fd5ed8286c5dd1b22388591e05dd8c87e75fc7a4f33418ab168510e790b3a2
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_ih.c
+SHA-256 3a68d06ccbc7447f86b2aac4b24c90aa5d1fa509f4f033abd77eae73a03205b3
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_ih.h
+SHA-256 2e3ca33641a8ee7abcea3602803f343500c3acef620fce0d433df803fdfd0408
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/oss/osssys_6_0_0_offset.h
+SHA-256 f10bdeaba9c30c062b96e34cd0af04d9e234b3822e2f175153a70e2bd2503307
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/oss/osssys_6_0_0_sh_mask.h
+SHA-256 68167e52369e0a00b30dd3bae62f7ffcf6bd1bd859aadc84b30c21b6b1ce7a16
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_doorbell.h
+SHA-256 5be18a6bce42879b959a05b19ed8904190f0105eb5bb5e3637a3138ec73903ae
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_doorbell_mgr.c
+SHA-256 82a9467f7e2ecaa84aba0c717b447480ac8483c3fb3c289bc2249e7c97de744a
+ih6.cpp adapts ih_v6_0 ring init, toggle, doorbell RPTR, self-IRQ ring1, NBIO
+ih_doorbell_range and clock gating defaults. nbio.cpp adapts nbio_v4_3 doorbell
+aperture, self-ring aperture (soc21_common_late_init) and gc_doorbell_init.
+The soc21 doorbell indices follow amdgpu_doorbell.h.
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/gc/gc_11_0_0_default.h
+SHA-256 268feb4eb12e0d391a848a399ddcff99bec6119c76a1098840182bac73191617
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/clearstate_gfx11.h
+SHA-256 8eee769a26ed99373c54255c436c6f3003124e09d604752f080a4b1777a531af
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/clearstate_defs.h
+SHA-256 70eb9f9a57d2cacb2ee2d7b9f17485384019ac03c845ce4bea941acdae137285
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/nvd.h
+SHA-256 f65a105dfceff3bc03b3e02ac52ed18586586a5866135170a3239ec77fbe29c8
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/soc15d.h
+SHA-256 45426641c204f06f54951174ac02a58c9bd49f7b0a7c822eaf984668ba3b8457
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_gfx.h
+SHA-256 6ec0db92249fbffd0306683b564ed08f30c02612aefe34de3dd42f15b71dd2a8
+gfx11_init.cpp adapts gfx_v11_0 wait_for_rlc_autoload_complete, config_gfx_rs64,
+golden_settings_gc_11_0, constants_init/init_compute_vmid/init_gds_vmid,
+get_csb_buffer/rlc_resume (PSP path) and cp_resume up to engine start.
+gfx11_clear_state.hpp is generated from clearstate_gfx11.h; pm4.hpp adapts nvd.h
+PACKET3 encodings. RB/CU/TCC topology bookkeeping queries are not performed.
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/mes_v11_0.c
+SHA-256 a0ede17af3ca60728c2b093e2e9985ae30eb00e1566745aabb5066c4a3138947
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_mes.h
+SHA-256 5d99262c803e9c016f70905f7034e5c3b070d16a69cccce05ca2adb5e9de0e38
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/mes_v11_api_def.h
+SHA-256 960b999a7efa7ba74c0b4b698bb0afd31c61114701d37bfc51d57f08394a9a84
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/v11_structs.h
+SHA-256 2945f31e9b26535a83e8c7a7642ae1a8afd61c73cc15a651d73ca8248d424804
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_ring.c
+SHA-256 73c28e48056b34d0f9ecbee0dfc41ef104a002848effa9163b3b2fff74b5a49f
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_ring.h
+SHA-256 b34da38d5d3e1a120e58dcd853e857dbac512f29847f690f7ab04939529129b5
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_fence.c
+SHA-256 f89874730a9f8088c53d5222e2e1e29a944e8e00826564174b5e83d278804c2f
+mes11.cpp adapts mes_v11_0 kiq_hw_init/hw_init (PSP load), enable, kiq_setting,
+MQD init, queue_init_register, kiq_enable_queue with the gfx_v11_0 KIQ ring test,
+set_hw_resources, query_sched_status, add/remove legacy queue, kiq_dequeue and
+submit_pkt_and_poll_completion. gfx11_queues.cpp adapts gfx_v11_0 compute and gfx
+MQD init, kcq_resume, cp_async_gfx_ring_resume/cp_gfx_start, ring_test_ring and
+the amdgpu_gfx compute queue acquisition, enable_kcq/kgq (amdgpu_gfx_mes_enable_kcq
+with queue_mask ~0) and disable_kcq/kgq through MES. API and MQD offsets were measured from the pinned
+mes_v11_api_def.h and v11_structs.h. SR-IOV, uni-MES, direct ucode load, the MES
+event log, gang/process APIs and amdgpu_mes_self_test are not adapted; the real
+gc_11_0_0_mes_2/mes1 headers give uc_start 0xFFFFFFFFF0005000.
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/sdma_common.h
+SHA-256 1e9d9423508df288bb3804fb42bc060605445dd14d31a5ea9ac5df7e6ce7c80b
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c
+SHA-256 d7b7f43cfa4d4106baa80a8e3771b07ea56e0b10d6d63c1496077f88d342d9e4
+sdma6_init.cpp adapts sdma_v6_0 hw_init/start/gfx_resume, ctxempty interrupt
+enable, nbio_v4_3_sdma_doorbell_range, ring_test_ring (FENCE packet in place of
+WRITE_LINEAR), hw_fini/enable(false) and the sdma_common.h cache policies, with
+GC 11.0.0 registers from upstream-sdma/gc_11_0_0_offset.h (AMDGPU-SDMA.txt).
+Direct ucode load, burst NOPs, IB test, trap IRQ and clock/power gating are not
+adapted. Rings and writeback live in local VRAM published with HDP flushes.
+
+
+Late init, gating, interrupts, teardown and reset additions, 2026-10-21:
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/pm/swsmu/inc/smu_internal.h
+SHA-256 a6ed3db196e90d27223af1b3d4801bb687c57c7d6e6caa032df5b734c7b37e61
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/athub_v3_0.c
+SHA-256 88fe66077cbd1ff634e6f6f37931fc88d96afa38c2ba4490eae73c75d868bb21
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/athub_v3_0.h
+SHA-256 e7926b322c8485f41d0fcb8118235e964d80a0dbb3156fa674ffdd5e1dfeb6e9
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/athub/athub_3_0_0_offset.h
+SHA-256 6f2bedf316f7c2bc1c877697bf809024b54ed04d656dfba0070a7506009a4643
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/athub/athub_3_0_0_sh_mask.h
+SHA-256 24b0d172b79b0fa41ac4fcf4b3904fe41109545eeda5c0db55cdb49ad71ce52e
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/hdp/hdp_6_0_0_sh_mask.h
+SHA-256 c54f8f680b68941ee74445dbb438c2958ba97629e3be7d630219cac6b9067fd6
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/lsdma_v6_0.c
+SHA-256 94ba4b48b3c550d174430ed4598ee47e02e49494673acdce64ed90fdb11d0364
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/lsdma/lsdma_6_0_0_offset.h
+SHA-256 d1195aa7eaab0ed9c6781617a02d55a7350032c6a7dd4285efa55c5862241d04
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/lsdma/lsdma_6_0_0_sh_mask.h
+SHA-256 291a4e38db8daacfe6fd6da654f96c13e8e6bcf39a8df635979f0893582cdaa5
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/pm/amdgpu_dpm.c
+SHA-256 dd4e64c4ac506ac1b8a733b8690f6a201e782ebaca43c8467626cd6e88fc6431
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_rlc.h
+SHA-256 d85e5492f27fdc84f8450fae6d80bd0d31ab8843ae19b1812a6940faf2b086c8
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/gc/gc_11_0_0_offset.h
+SHA-256 a2394677509a3415a9e6307d876cae9cd654a99275ab40b3027d983da26801f2
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/gc/gc_11_0_0_sh_mask.h
+SHA-256 83dd0060886da2927e3f722b992af208e4d41999b0740123a770a6561f060c94
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_irq.c
+SHA-256 1eef534d1315f376b8d2a2007805ec9e3599806b4704b79ef2b1495259c7d69b
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_irq.h
+SHA-256 ecef8bf0bc1b4243d8afdaf5e115fd39c6c080af504d4d18d209eba63ca6088b
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/pm/swsmu/smu_cmn.h
+SHA-256 d41d6d571701bf316b78cd492bc61c3802928e529817f2f9d92e57d2cffc6552
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_mes_ctx.h
+SHA-256 da82174d8e58210e60fda91efe3a74ec91274c87e73fd42be22b5a5151dc2410
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/ivsrcid/vmc/irqsrcs_vmc_1_0.h
+SHA-256 c17236e95a8db469e50bfd4210ab5ef4afc8f838892babe60c26b0f5671e180e
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/ivsrcid/nbio/irqsrcs_nbif_7_4.h
+SHA-256 8d8f1891adf76e672dcfdba4712f662d570de97c6c77cd5d26c22e76c4bc91f9
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/kgd_pp_interface.h
+SHA-256 9edb477b244e7cb437a79075e7e23214d1282ab56637dcc875f2d9fb42f0b7e1
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_atombios.c
+SHA-256 ae8a41ffd9baafeeedd213b589389eca8be6cf68fe8c33f837b7d5ec63d64113
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/atombios.h
+SHA-256 f7ca3f6cde2db6dcadd2606fa5af53c8be7308f0442fc3a76dfc815985ee0dd0
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_ib.c
+SHA-256 3ad28f135d332cb49aed6035539fc7bfda760e3b585ea1028426c89fb7b6d267
+smu13.cpp adds smu_late_init (set_ac_dc, OD table read, UMD pstate clocks,
+get_power_limit, unique id, COMPLETE_INIT workload mask), smu_hw_fini (thermal
+alert disable; 13.0.0 keeps DPM features) and smu_v13_0_0_mode1_reset.
+clock_gating.cpp adapts soc21 cg/pg flags, amdgpu_device_set_cg/pg_state order,
+soc21_common/HDP/NBIO/LSDMA, gmc_v11_0 MMHUB/ATHUB and gfx_v11_0
+update_gfx_clock_gating with RLC safe mode, and amdgpu_gfx_off_ctrl/GFXOFF.
+gfx11_queues.cpp and sdma6_init.cpp add gfx_v11_0/sdma_v6_0 ring_test_ib with
+the amdgpu_ib_ring_tests order and timeouts (fence polled, not interrupt-waited).
+irq_service.cpp adapts amdgpu_ih_process, amdgpu_ih_decode_iv_helper (through the
+shared decoder), amdgpu_irq_dispatch and the gfx/sdma/gmc/smu process handlers
+and source-enable registers. asic_init.cpp adds amdgpu_device_ip_fini_early,
+amdgpu_device_mode1_reset (BIOS-scratch engine-hung flag from amdgpu_atombios.c,
+psp_v13_0_wait_for_bootloader, get_memsize) and the GTT backend (amdgpu_gart_bind/
+unbind with gmc_v11_0 gart_pte_flags).
+
+
+MES self-test additions, 2026-10-21:
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_vm.h
+SHA-256 b5edb0da7366eb56920b950eed7f37b73cb692ce7d85bb84a013e4eeb9653aa9
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_vm_pt.c
+SHA-256 78d697fa871a4867d1bf5b2362581a9e85aa21c9eb63162fb97b42fc1af9b591
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_gmc.h
+SHA-256 40b4227d00ee1f38ff5f49c78f07640954c1c30ce8789f8069e64f0cc83db5be
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_vm_sdma.c
+SHA-256 b34aa17e0f0eb0a842e19970ef095bc436e1822c9f11c9371c5d693e27bb613f
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_vm_cpu.c
+SHA-256 ce5467f3cb4f101ae4bb5218bfb0fd2fbafa554a4bda602bc79f85249b6644a8
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_ids.c
+SHA-256 029825f68c87dcd80c47166b89dce5a8b4cc81a06621246a7222e84b391cce12
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/sdma_v6_0.c
+SHA-256 75ed90d0057dca036aaf2eb3332755886af49f35977e49ce80b735b5e39c613f
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/sdma_v6_0_0_pkt_open.h
+SHA-256 d01f73f53b8bf9f287880f07b6287b4d9522494b0fa57fb33ea92c93a8623dbe
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_object.c
+SHA-256 1c35771d4feb779eacaa38a10c17b2565e109b97382b16e4f4a0bec6583b724c
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_object.h
+SHA-256 cdbb46d78d7749a6ca11ddb5c6c974b8929ead5b598e1d07555eedf1b0638b5a
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_vram_mgr.c
+SHA-256 2489747f90c4994b2c8cfd3006fcfdc2fc26c672ccbb4fb7e219eb3a3c7fc07f
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/v10_structs.h
+SHA-256 907f1822aae243e49cf1565c46262e0b6064bed678553d497250382759a90059
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/ttm/ttm_resource.c
+SHA-256 06ce1d892b5e7a1fe9794ad95644aad7416ab482afcc9912e4064b9540ce77a3
+mes11.cpp adds amdgpu_mes_self_test (process/gang ADD_QUEUE and REMOVE_QUEUE
+frames, gfx/compute/SDMA user-queue MQDs, ring and IB tests through MES) and
+mes_selftest_vm.cpp adapts amdgpu_vm_init/amdgpu_vm_pt (four-level process VM,
+max_pfn 2^36, block size 9) and amdgpu_mes_ctx_map_meta_data with the
+amdgpu_vm_update_range fragment rules; page tables are CPU-written through the
+uncached VRAM window with the entry values Linux's SDMA updates produce.
+
+
+VBIOS acquisition, PCIe partner link and PSP trusted-application additions, 2026-10-22:
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/amd_pcie.h
+SHA-256 b402ef43ec34ba42881e1a725dda37b149986c720ab8736758e1bff3358487a1
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_acpi.c
+SHA-256 aaf89ee334183227300c70a4c95ec8417139306e54a310b853759fe0d90b4ac7
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/smuio_v13_0_6.c
+SHA-256 fe2d09ab1830793e72bb433b25b640c334e5ffd84e9d5aa146dce1d3f57c046a
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_smuio.h
+SHA-256 98088fc77e5660dbd393db9084f33b0b6dd5996917839c229da54e36101d41c2
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/smuio/smuio_13_0_6_offset.h
+SHA-256 1669701f03ef51898dd3b417417fb3932518e8b76eed618ac1b70223ff275982
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/smuio/smuio_13_0_6_sh_mask.h
+SHA-256 35ecf970104100a2192134d1e7a1e3ac31f7ac5d60bb834866e53660e77ba742
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_bios.c
+SHA-256 7045741fb7f9291c0392fc2f0a63e461861c9a86fa6434508734348744be2dda
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_ras.c
+SHA-256 8c24f16ae48cecea0d27fa748dea51257fb3eb84255681b5d7019c9f2a0e2abb
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_ras.h
+SHA-256 2c54779ad4ad636fad93bcef6b50a5d2fd895577abe8f1b57d2868d6bd3d72f2
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/ta_ras_if.h
+SHA-256 43db69b3dd10862b4b64fb9c9fb6b8f62b5aefe7f2a8bdfa97dde2836d54fd2d
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/umc_v8_10.c
+SHA-256 2673e93339a18d255f0b25161ba449e37835cfc1888ffacefdf57a1a033b4333
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/df_v4_3.c
+SHA-256 cb1b5f2bc5e4c3ebaa0679c80a532a974533b5f1b7eb30e7a8c883eafc086835
+Downloaded 2026-10-24 (same v6.12 tag, git.kernel.org plain/<path>?h=v6.12):
+https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/drivers/gpu/drm/amd/include/asic_reg/umc/umc_8_10_0_offset.h?h=v6.12
+SHA-256 99230630311455b08544c322766cb8adc1b543d9bfdf5c71cbf2e87ab257acc1
+https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/drivers/gpu/drm/amd/include/asic_reg/umc/umc_8_10_0_sh_mask.h?h=v6.12
+SHA-256 fa2447735cd233adc47caae6cf156727b27da73eb1ca7bcac706d24c0f9af022
+https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/drivers/gpu/drm/amd/amdgpu/umc_v8_10.h?h=v6.12
+SHA-256 7f3972173f3f6a43231707140c8deb35f95ccfb56e2944f17dce8bbe2c19e8f8
+https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/drivers/gpu/drm/amd/amdgpu/amdgpu_umc.c?h=v6.12
+SHA-256 c38c5a196573ec07da0a4409a7f5fe96657698666c6bf72f9acb8390bf3b6344
+https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/drivers/gpu/drm/amd/amdgpu/amdgpu_umc.h?h=v6.12
+SHA-256 2df9f9d435b5f0acf37fa6d92d75d6538a98be9160ece7e798311bc51b27e169
+https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/drivers/gpu/drm/amd/amdgpu/amdgpu_ras_eeprom.c?h=v6.12
+SHA-256 ae033cef1a52207a306386bbc4ace455b4259fa010a6a7ec9aab70f3ec165de8
+(umc_v8_10.c, amdgpu_ras.c, gmc_v11_0.c and smu_v13_0_0_ppt.c re-downloaded from there match
+the SHA-256 values already listed.) umc_v8_10.cpp adapts umc_v8_10_channel_idx_tbl/_ext0,
+channelnum_map_colbit_table, get_umc_v8_10_reg_offset, umc_v8_10_swizzle_mode_na_to_pa,
+umc_v8_10_convert_error_address, query_ras_error_count/address, clear_error_count and
+err_cnt_init over amdgpu_device_indirect_rreg64/wreg64; gpu_health.cpp adapts
+amdgpu_umc_handle_bad_pages (direct query), amdgpu_umc_do_page_retirement, amdgpu_ras_add_bad_pages
+and the amdgpu_ras_validate_threshold/amdgpu_ras_eeprom_append threshold warning; discovery.cpp
+adapts amdgpu_discovery_read_from_harvest_table and amdgpu_discovery_get_mall_info.
+vbios_rom.cpp adapts amdgpu_bios.c check_atom_bios, amdgpu_read_bios_from_rom
+with soc21/smuio_v13_0_6 ROM_INDEX/ROM_DATA and the NBIO ROM offset, and the
+VFCT image match; src/reactos/vbios.cpp follows amdgpu_get_bios order for the
+sources ReactOS permits (legacy shadow, ROM BAR, SMUIO; ATRM/VFCT/platform ROM are
+unavailable to a ReactOS miniport) with rx7900.rom last. pci_caps.cpp adapts
+amdgpu_device_get_pcie_info/amdgpu_device_partner_bandwidth and the smu_smc_hw_setup
+encoding (the GPL-2.0 drivers/pci parts are listed in licenses/LINUX-PCI.txt).
+psp_ta.cpp adapts psp_ta_load/unload, psp_ras/hdcp/dtm_initialize/terminate,
+psp_boot_config_get/set (opt-in), amdgpu_ras_check_supported for MP0 13.0.0 and
+the ta_ras_shared_memory init flags; ucode.cpp parses TA2.0 descriptors as
+parse_ta_v2_microcode. asic_init.cpp reads MALL_INFO m_half_use as
+amdgpu_discovery_get_mall_info.
+
+
+Fences, GPU virtual memory, VRAM reservations and allocation, 2026-10-22:
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_job.c
+SHA-256 d672a62e800892311344e42056c3243361ebf12c1f9188e4a0dd18177f330f40
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_job.h
+SHA-256 e262adf74b37954c955e1af5efa22115bef5aedf06d3150c3aca877cb373b73e
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/scheduler/sched_main.c
+SHA-256 fa3e62b76a545f8f34d9318fd679311e3a50b90adef667d503a95733f8ae6c13
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/drm_buddy.c
+SHA-256 380f5b9c4ae23ea36014c58d8d613d8c5b8863f008671a70e70c5016c6fea73c
+https://raw.githubusercontent.com/torvalds/linux/v6.12/include/drm/drm_buddy.h
+SHA-256 5b6e5e0978482722e89a0bfbe46417a87d3fc1a04f29b0fc1ed1be9c3667b48c
+fence.cpp adapts amdgpu_fence (sync_seq/last_seq, 500 ms fallback timer),
+amdgpu_job timeouts (amdgpu_device_get_job_timeout_settings) and drm_sched job
+timer semantics (sched_main.c, MIT); gfx11_queues/sdma6_init add amdgpu_ib_schedule
+submission; irq_service routes CP/VM faults as gfx_v11_0 and gmc_v11_0 do.
+gpuvm.cpp adapts amdgpu_vm/amdgpu_vm_pt/amdgpu_vm_cpu page tables, amdgpu_pasid
+allocation and gmc_v11_0_flush_gpu_tlb_pasid with the MES MISC invalidation;
+vram_reservations.cpp adapts amdgpu_atomfirmware_allocate_fb_scratch,
+amdgpu_ttm_reserve_tmr and amdgpu_gmc_get_vbios_allocations; vram_allocator.cpp
+ports drm_buddy (Copyright 2021 Intel Corporation, MIT; the file's SPDX tag is MIT)
+and amdgpu_vram_mgr; GART flushes switch to amdgpu_mes_reg_write_reg_wait once
+the MES ring is ready, as gmc_v11_0_flush_gpu_tlb does.
+
+Native NT firmware file acquisition and VideoPort resource/MMIO ownership are
+authored C++. No AMD binary firmware is distributed in this source package.
+Read-only tests use private decompressed host firmware files, never GPU uploads.
+
+Copyright 2008 Advanced Micro Devices, Inc.
+Copyright 2008 Red Hat Inc.
+Copyright 2009 Jerome Glisse.
+Copyright 2012 Advanced Micro Devices, Inc.
+Copyright 2014 Advanced Micro Devices, Inc.
+Copyright 2016 Advanced Micro Devices, Inc.
+Copyright 2017 Advanced Micro Devices, Inc.
+Copyright 2018 Advanced Micro Devices, Inc.
+Copyright 2019 Advanced Micro Devices, Inc.
+Copyright 2020 Advanced Micro Devices, Inc.
+Copyright 2021 Advanced Micro Devices, Inc.
+Copyright 2022 Advanced Micro Devices, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.

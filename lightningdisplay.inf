@@ -1,0 +1,155 @@
+; Module: lightning.reactos.display_package
+; Purpose: Install the virtual display miniport, DDI and shared transport filter.
+; Created: 2026-10-21
+; Architecture: Exact Lightning PCI binding; no physical AMD device matches.
+[Version]
+Signature="$Windows NT$"
+Class=Display
+ClassGuid={4D36E968-E325-11CE-BFC1-08002BE10318}
+Provider=%Provider%
+DriverVer=10/21/2026,0.2.0.0
+
+[Manufacturer]
+%Provider%=Models,NTx86,NTamd64
+
+[Models.NTx86]
+%Device%=Install,PCI\VEN_1234&DEV_11F1
+
+[Models.NTamd64]
+%Device%=Install,PCI\VEN_1234&DEV_11F1
+
+[DestinationDirs]
+MiniportFiles=12
+DisplayFiles=11
+OpenGLRuntimeFiles=11
+
+[Install.NT]
+CopyFiles=MiniportFiles,DisplayFiles
+
+; The current packaged NT5 runtime is i386. AMD64 retains the display package
+; until a matching AMD64 runtime is supplied; no system OpenGL DLL is replaced.
+[Install.NTx86]
+CopyFiles=MiniportFiles,DisplayFiles,OpenGLRuntimeFiles
+AddReg=OpenGLSettings
+
+; A native AMD64 ReactOS desktop installs the display/transport pair and the
+; matched native x64 Venus/Zink runtime (LightningGL\ of the AMD64 package,
+; PE32+ only; ReactOS AMD64 has no 32-bit subsystem). The ICD is registered in
+; the native registry view, as on i386. This section is explicit rather than
+; relying on an undecorated Install.NT fallback in SetupAPI.
+[Install.NTamd64]
+CopyFiles=MiniportFiles,DisplayFiles,OpenGLRuntimeFiles
+AddReg=OpenGLSettings
+
+[OpenGLSettings]
+HKLM,"SOFTWARE\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\QemuLightning",Dll,0x00000000,"%11%\QemuLightningOpenGL.dll"
+HKLM,"SOFTWARE\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\QemuLightning",Version,0x00010001,2
+HKLM,"SOFTWARE\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\QemuLightning",DriverVersion,0x00010001,0x00020000
+HKLM,"SOFTWARE\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\QemuLightning",Flags,0x00010001,0
+; Seed only a missing initial default. Applications retain swap-interval control.
+HKLM,"SOFTWARE\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\QemuLightning",DefaultSwapInterval,0x00010003,0
+
+[Install.NT.HW]
+AddReg=HardwareSettings
+
+[Install.NTx86.HW]
+AddReg=HardwareSettings
+
+[Install.NTamd64.HW]
+AddReg=HardwareSettings
+
+[HardwareSettings]
+; ReactOS APPEND does not create a missing value. Seed without replacing others.
+HKR,,UpperFilters,0x00010002,"LightningNT5"
+HKR,,UpperFilters,0x00010008,"LightningNT5"
+
+[Install.SoftwareSettings]
+AddReg=DisplaySettings
+
+[Install.NT.SoftwareSettings]
+AddReg=DisplaySettings
+
+[Install.NTx86.SoftwareSettings]
+AddReg=DisplaySettings
+
+[Install.NTamd64.SoftwareSettings]
+AddReg=DisplaySettings
+
+[DisplaySettings]
+HKR,,InstalledDisplayDrivers,0x00010000,"lightningdisp"
+HKR,,VgaCompatible,0x00010001,0
+HKR,,DefaultSettings.XResolution,0x00010001,1920
+HKR,,DefaultSettings.YResolution,0x00010001,1080
+HKR,,DefaultSettings.BitsPerPel,0x00010001,32
+HKR,,DefaultSettings.VRefresh,0x00010001,60
+
+[Install.NT.Services]
+AddService=LightningVideo,0x00000002,DisplayService
+AddService=LightningNT5,0x00000000,TransportService
+
+[Install.NTx86.Services]
+AddService=LightningVideo,0x00000002,DisplayService
+AddService=LightningNT5,0x00000000,TransportService
+
+[Install.NTamd64.Services]
+AddService=LightningVideo,0x00000002,DisplayService
+AddService=LightningNT5,0x00000000,TransportService
+
+[DisplayService]
+DisplayName=%Device%
+ServiceType=1
+StartType=3
+ErrorControl=0
+ServiceBinary=%12%\lightningvideo.sys
+LoadOrderGroup=Video
+AddReg=ServiceSettings
+
+[ServiceSettings]
+HKR,Video,Service,0x00000000,"LightningVideo"
+HKR,Device0,Device Description,0x00000000,%Device%
+HKR,Device0,InstalledDisplayDrivers,0x00010000,"lightningdisp"
+HKR,Device0,VgaCompatible,0x00010001,0
+HKR,Device0,DefaultSettings.XResolution,0x00010001,1920
+HKR,Device0,DefaultSettings.YResolution,0x00010001,1080
+HKR,Device0,DefaultSettings.BitsPerPel,0x00010001,32
+HKR,Device0,DefaultSettings.VRefresh,0x00010001,60
+
+[TransportService]
+DisplayName=%Transport%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%12%\lightningnt5.sys
+
+[MiniportFiles]
+lightningvideo.sys
+lightningnt5.sys
+
+[DisplayFiles]
+lightningdisp.dll
+
+[OpenGLRuntimeFiles]
+QemuLightningOpenGL.dll
+QemuLightningSync.dll
+QemuLightningVulkan.dll
+QemuLightningVulkanLoader.dll
+QemuLightningVulkan.json
+
+[SourceDisksNames]
+1=%Media%
+
+[SourceDisksFiles]
+lightningvideo.sys=1
+lightningnt5.sys=1
+lightningdisp.dll=1
+QemuLightningOpenGL.dll=1,LightningGL
+QemuLightningSync.dll=1,LightningGL
+QemuLightningVulkan.dll=1,LightningGL
+QemuLightningVulkanLoader.dll=1,LightningGL
+QemuLightningVulkan.json=1,LightningGL
+
+[Strings]
+Provider="QEMU Lightning development"
+Device="QEMU Lightning virtual display"
+Transport="Lightning NT5 bounded host transport"
+Media="Lightning NT5 display development package"

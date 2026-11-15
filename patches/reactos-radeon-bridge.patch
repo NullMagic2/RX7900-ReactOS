@@ -1,0 +1,110 @@
+--- a/win32ss/CMakeLists.txt
++++ b/win32ss/CMakeLists.txt
+@@ -254,4 +254,21 @@
+     target_link_libraries(win32k diblib)
+ endif()
++# Optional paired caller bridge offers a positively identified physical
++# radeondisp surface its DrvStrokePath for styled cosmetic segments. Every
++# other driver, engine bitmap and declined call keeps the original path.
++option(RX7900_RADEON_BRIDGE "Offer styled cosmetic lines to radeondisp DrvStrokePath" OFF)
++set(RX7900_RADEON_BRIDGE_SOURCE "" CACHE PATH "RX7900 native C++ source directory")
++if(RX7900_RADEON_BRIDGE)
++    if(NOT EXISTS "${RX7900_RADEON_BRIDGE_SOURCE}/radeon_bridge.cpp" OR
++       NOT EXISTS "${RX7900_RADEON_BRIDGE_SOURCE}/radeon_line_identity.hpp" OR
++       NOT EXISTS "${RX7900_RADEON_BRIDGE_SOURCE}/framebuffer_stretch_guard.hpp")
++        message(FATAL_ERROR "RX7900_RADEON_BRIDGE_SOURCE must contain the paired Radeon caller bridge")
++    endif()
++    target_sources(win32k PRIVATE "${RX7900_RADEON_BRIDGE_SOURCE}/radeon_bridge.cpp")
++    target_include_directories(win32k PRIVATE "${RX7900_RADEON_BRIDGE_SOURCE}")
++    target_compile_definitions(win32k PRIVATE RX7900_RADEON_BRIDGE)
++    set_target_properties(win32k PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES
++        WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
++endif()
+ 
+ add_importlibs(win32k ntoskrnl hal ftfd)
+--- a/win32ss/gdi/eng/lineto.c
++++ b/win32ss/gdi/eng/lineto.c
+@@ -10,6 +10,9 @@
+ 
+ #define NDEBUG
+ #include <debug.h>
++#ifdef RX7900_RADEON_BRIDGE
++#include "radeon_bridge.hpp"
++#endif
+ 
+ static void FASTCALL
+ TranslateRects(RECT_ENUM *RectEnum, POINTL* Translate)
+@@ -625,6 +628,54 @@
+     return IntEngLeave(&EnterLeave);
+ }
+ 
++#ifdef RX7900_RADEON_BRIDGE
++/* Present one styled cosmetic segment to an identified radeondisp
++ * DrvStrokePath. The path, its data and points live on this stack frame for
++ * the synchronous driver call only. FALSE leaves IntEngLineTo's original
++ * DrvLineTo/EngLineTo path completely unchanged. */
++static DECLSPEC_NOINLINE BOOL
++Rx7900RadeonStrokeSegment(SURFOBJ *psoDest,
++                          CLIPOBJ *ClipObj,
++                          BRUSHOBJ *pbo,
++                          PBRUSH pbrush,
++                          LONG x1,
++                          LONG y1,
++                          LONG x2,
++                          LONG y2,
++                          MIX Mix)
++{
++    RX7900_RADEON_STROKE Stroke;
++    EXTPATHDATA PathData;
++    PATH Path;
++    EPATHOBJ PathObj;
++
++    if (!Rx7900RadeonStrokePrepare(&Stroke, psoDest, GDIDEVFUNCS(psoDest).Escape,
++                                   ClipObj, Mix, x1, y1, x2, y2,
++                                   pbrush->dwStyleCount, pbrush->pStyle))
++    {
++        return FALSE;
++    }
++
++    RtlZeroMemory(&PathData, sizeof(PathData));
++    RtlZeroMemory(&Path, sizeof(Path));
++    RtlZeroMemory(&PathObj, sizeof(PathObj));
++    PathData.pd.flags = PD_BEGINSUBPATH | PD_ENDSUBPATH;
++    PathData.pd.count = 2;
++    PathData.pd.pptfx = Stroke.points;
++    Path.flType = PATHTYPE_STACK;
++    Path.ppdFirst = &PathData;
++    Path.ppdLast = &PathData;
++    Path.ppdCurrent = &PathData;
++    Path.cCurves = 1;
++    Path.epo = &PathObj;
++    PathObj.po.fl = PO_ALL_INTEGERS;
++    PathObj.po.cCurves = 1;
++    PathObj.pPath = &Path;
++    return Rx7900RadeonStrokeDraw(&Stroke, GDIDEVFUNCS(psoDest).StrokePath, psoDest,
++                                  &PathObj.po, ClipObj, pbo);
++}
++#endif
++
+ BOOL APIENTRY
+ IntEngLineTo(SURFOBJ *psoDest,
+              CLIPOBJ *ClipObj,
+@@ -685,6 +736,18 @@
+     if (b.left == b.right) b.right++;
+     if (b.top == b.bottom) b.bottom++;
+ 
++#ifdef RX7900_RADEON_BRIDGE
++    /* The #if 0 DrvStrokePath emulation below would run only after DrvLineTo,
++     * which already draws styled lines through EngLineTo. The paired bridge
++     * offers an identified radeondisp the styled segment first instead. */
++    if ((psurfDest->flags & HOOK_STROKEPATH) && GdiBrush->pbrush->dwStyleCount != 0 &&
++        Rx7900RadeonStrokeSegment(psoDest, ClipObj, pbo, GdiBrush->pbrush,
++                                  x1, y1, x2, y2, Mix))
++    {
++        return TRUE;
++    }
++#endif
++
+     if (psurfDest->flags & HOOK_LINETO)
+     {
+         /* Call the driver's DrvLineTo */

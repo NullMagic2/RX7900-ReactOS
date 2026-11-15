@@ -1,0 +1,48 @@
+Linux PCI core references (GPL-2.0-only), 2026-10-22
+
+src/common/pci_caps.cpp and src/reactos/pci_config.cpp reimplement, in authored
+C++17, algorithms of the Linux v6.12 PCI core: capability-list walks with TTL
+(__pci_find_next_cap_ttl, pci_find_next_ext_capability), pci_cfg_space_size_ext,
+pcie_capability_reg_implemented, pcie_get_speed_cap/pcie_get_width_cap,
+pcie_bandwidth_available, the Resizable BAR helpers and 1002:731F quirk,
+pci_save_state/pci_restore_state ordering and pci_resize_resource preconditions.
+The Linux files are GPL-2.0-only; no source text is copied, but the behaviour is
+derived from them, so their provenance is recorded here. drivers/pci/rom.c and
+arch/x86/pci/fixup.c were consulted for the ROM BAR and VGA shadow behaviour
+implemented in src/reactos/vbios.cpp. Pinned copies: work/upstream-gpuinit.
+
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/pci/pci.c
+SHA-256 396e4c43e38b44ae60322c7761a72db8fa9036128921c1b352545e381c1a875a
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/pci/probe.c
+SHA-256 d20821bf30b6444f2685c1bdd0adfe15b92d0543c0a6eaf9466bd18a7ecda3e0
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/pci/setup-res.c
+SHA-256 8e081330e2cb791a08da081a2edc2ad450d3967ccc2303f73e67dcd49dc8e587
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/pci/setup-bus.c
+SHA-256 9bea4cd24ec2a961c99cc0ed82857702c02b7c2a55759eb25cd0a33d380b80f9
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/pci/pci.h
+SHA-256 8bcb999a4a383508f05a38f04dc8fcf77a6c47af6b9690f22737af52d22d3598
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/pci/access.c
+SHA-256 12b42257f7cdc7cfbec4c60eed0014f3f7d5fe41a1e5ac05810a416a20b6db86
+https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/linux/pci_regs.h
+SHA-256 4850d40e384251db73ce01d65b991af2a019032d7aa20f735c6d47ac9b5e0d95
+https://raw.githubusercontent.com/torvalds/linux/v6.12/include/linux/pci.h
+SHA-256 69adc15ab0d31a87238b59a4c9bfe5ed982e0030b0296c15d1ce0f55ba3d9a8c
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/pci/msi/msi.c
+SHA-256 7b220283aa71d2b27740d37c249deb8d4e261298cee85ed600d86cb84405d7d6
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/pci/quirks.c
+SHA-256 f0dc5d5df08b07ecd706fa19277ad664dcbb11fb279b868af98db64ceba56e12
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/pci/pcie/aspm.c
+SHA-256 9db69a8f2606e6eab78ca0762c793f4f76c51ca75d17ab0dfda9435c32e065fa
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/pci/rom.c
+SHA-256 31fb18155d3730d86cc9ca8c8b6933e29ad6c1c262791f20714cfe3eca596c34
+https://raw.githubusercontent.com/torvalds/linux/v6.12/arch/x86/pci/fixup.c
+SHA-256 fcdb87bace6a8be9ba22502743f4ff11f94fbb6293a72ac8cfe069ae5c49bfb9
+
+Also consulted (GPL-2.0-only, behaviour only, no text copied): printk_ratelimit
+semantics for the fence module's VM-fault report rate limit.
+https://raw.githubusercontent.com/torvalds/linux/v6.12/include/linux/ratelimit_types.h
+SHA-256 7e146f60954a64cfe30bc83be3944f95969ba35a7871a4c801f966beaf719fe5
+https://raw.githubusercontent.com/torvalds/linux/v6.12/lib/ratelimit.c
+SHA-256 54807885d6de71d13e5024652b279a3613882bd525462b851cd37bdd52613b16
+https://raw.githubusercontent.com/torvalds/linux/v6.12/kernel/printk/printk.c
+SHA-256 ae8301621bf0e2cfeed0ecb74aef39ea3c0810a2502b1c2b95966e26f4587692

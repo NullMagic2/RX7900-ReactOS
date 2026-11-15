@@ -1,0 +1,1185 @@
+# Module: rx7900.build
+# Purpose: Build one common C++ core for host checks and native ReactOS consumers.
+# Created: 2026-10-21
+# Architecture: Standalone tooling or an in-tree ReactOS component.
+
+cmake_minimum_required(VERSION 3.17)
+
+if(NOT COMMAND set_module_type)
+    project(RX7900ReactOS LANGUAGES CXX)
+    include(CTest)
+endif()
+
+option(RX7900_SANITIZERS "Instrument native host checks with ASan and UBSan" OFF)
+option(RX7900_LIGHTNING_GDI_OFFLOAD
+    "Enable experimental GDI offload with a matching hardware-backed Lightning host" OFF)
+option(RX7900_LIGHTNING_TRANSPORT_TIMING
+    "Collect bounded native transport timing aggregates for diagnostics" OFF)
+option(RX7900_LIGHTNING_POSTED_SUBMIT
+    "Post renderer SUBMITs on a shared-ring Lightning host (a later host failure becomes DEVICE_LOST)" OFF)
+
+add_library(rx7900core STATIC src/common/pci.cpp src/common/pci_caps.cpp src/common/atom_bios.cpp)
+target_include_directories(rx7900core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/common")
+set_target_properties(rx7900core PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES
+    CXX_EXTENSIONS NO)
+
+function(rx7900_cpp_target target)
+    set_target_properties(${target} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES
+        CXX_EXTENSIONS NO)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /WX /permissive-)
+        target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    if(RX7900_SANITIZERS)
+        if(MSVC OR CMAKE_CROSSCOMPILING OR COMMAND set_module_type)
+            message(FATAL_ERROR "ASan/UBSan checks require a native GCC/Clang host build")
+        endif()
+        target_compile_options(${target} PRIVATE -fsanitize=address,undefined
+            -fno-omit-frame-pointer)
+        target_link_options(${target} PRIVATE -fsanitize=address,undefined)
+    endif()
+endfunction()
+
+rx7900_cpp_target(rx7900core)
+
+add_library(rx7900firmware STATIC src/hardware/firmware.cpp)
+target_include_directories(rx7900firmware PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/hardware" "${CMAKE_CURRENT_SOURCE_DIR}/src/common")
+rx7900_cpp_target(rx7900firmware)
+
+add_library(rx7900discovery STATIC src/hardware/discovery.cpp)
+target_include_directories(rx7900discovery PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/hardware" "${CMAKE_CURRENT_SOURCE_DIR}/src/common")
+rx7900_cpp_target(rx7900discovery)
+
+add_library(rx7900lightningabi INTERFACE)
+target_include_directories(rx7900lightningabi INTERFACE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/reactos"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/qemu_lightning")
+target_compile_definitions(rx7900lightningabi INTERFACE __STDC_CONSTANT_MACROS)
+
+add_library(rx7900lightningprotocol STATIC src/reactos/lightning_protocol.cpp)
+target_include_directories(rx7900lightningprotocol PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/reactos" "${CMAKE_CURRENT_SOURCE_DIR}/src/common"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/acceleration"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/qemu_lightning")
+target_link_libraries(rx7900lightningprotocol PUBLIC rx7900lightningabi)
+rx7900_cpp_target(rx7900lightningprotocol)
+
+add_library(rx7900lightningexchange STATIC src/reactos/lightning_exchange_policy.cpp)
+target_link_libraries(rx7900lightningexchange PUBLIC rx7900lightningprotocol)
+rx7900_cpp_target(rx7900lightningexchange)
+
+add_library(rx7900framebuffercache STATIC src/reactos/framebuffer_cache_boot.cpp)
+target_include_directories(rx7900framebuffercache PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/reactos")
+rx7900_cpp_target(rx7900framebuffercache)
+
+add_library(rx7900lightningscanout STATIC src/reactos/lightning_scanout.cpp)
+target_link_libraries(rx7900lightningscanout PUBLIC rx7900lightningabi)
+rx7900_cpp_target(rx7900lightningscanout)
+
+add_library(rx7900lightninggdi STATIC third_party/qemu_lightning/gdi_protocol.cpp)
+target_include_directories(rx7900lightninggdi PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/qemu_lightning")
+target_link_libraries(rx7900lightninggdi PUBLIC rx7900lightningabi)
+rx7900_cpp_target(rx7900lightninggdi)
+
+add_library(rx7900linecoverage STATIC src/reactos/line_coverage.cpp)
+target_include_directories(rx7900linecoverage PUBLIC src/reactos)
+target_link_libraries(rx7900linecoverage PUBLIC rx7900lightningabi)
+rx7900_cpp_target(rx7900linecoverage)
+set_target_properties(rx7900linecoverage PROPERTIES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+
+add_library(rx7900memory STATIC src/memory/manager.cpp src/memory/page_table.cpp
+    src/memory/gfxhub.cpp)
+target_include_directories(rx7900memory PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/memory" "${CMAKE_CURRENT_SOURCE_DIR}/src/acceleration"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/common")
+target_link_libraries(rx7900memory PUBLIC rx7900discovery)
+rx7900_cpp_target(rx7900memory)
+
+add_library(rx7900psp STATIC src/hardware/psp_boot.cpp)
+target_include_directories(rx7900psp PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/hardware")
+target_link_libraries(rx7900psp PUBLIC rx7900firmware rx7900memory rx7900discovery)
+rx7900_cpp_target(rx7900psp)
+
+# Physical Navi31 ASIC initialization protocols; native code supplies MMIO/VRAM.
+add_library(rx7900asic STATIC src/hardware/vram_discovery.cpp src/hardware/nbio.cpp
+    src/hardware/ucode.cpp src/hardware/psp_ring.cpp src/hardware/smu13.cpp
+    src/hardware/asic_init.cpp src/hardware/atom_firmware.cpp
+    src/hardware/psp_training.cpp src/hardware/gmc11.cpp
+    src/hardware/ih6.cpp src/hardware/gfx11_init.cpp src/hardware/sdma6_init.cpp
+    src/hardware/mes11.cpp src/hardware/gfx11_queues.cpp src/hardware/clock_gating.cpp
+    src/hardware/irq_service.cpp src/hardware/mes_selftest_vm.cpp
+    src/hardware/vbios_rom.cpp src/hardware/psp_ta.cpp src/hardware/vram_allocator.cpp
+    src/hardware/vram_backend.cpp src/hardware/fence.cpp src/hardware/gpuvm.cpp
+    src/hardware/vram_reservations.cpp)
+target_link_libraries(rx7900asic PUBLIC rx7900psp rx7900sdma rx7900core)
+rx7900_cpp_target(rx7900asic)
+# MES process queues and the internal job scheduler (Physical_gpu_init).
+target_sources(rx7900asic PRIVATE src/hardware/user_queue.cpp src/hardware/scheduler.cpp)
+
+add_library(rx7900sdma STATIC src/acceleration/sdma.cpp src/acceleration/ring.cpp
+    src/acceleration/interrupt.cpp)
+target_include_directories(rx7900sdma PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/acceleration")
+target_link_libraries(rx7900sdma PUBLIC rx7900memory)
+rx7900_cpp_target(rx7900sdma)
+
+add_library(rx7900display STATIC src/display/modes.cpp src/display/dcn32_otg.cpp
+    src/display/dcn32_hpd.cpp)
+target_include_directories(rx7900display PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/display" "${CMAKE_CURRENT_SOURCE_DIR}/src/common")
+rx7900_cpp_target(rx7900display)
+
+add_library(rx7900output STATIC src/output/sink.cpp src/output/atom_connectors.cpp
+    src/output/dp_link.cpp src/output/dp_training.cpp src/output/dcn32_aux.cpp
+    src/reactos/dp_port_native.cpp)
+target_include_directories(rx7900output PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/output"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/reactos")
+target_link_libraries(rx7900output PUBLIC rx7900display rx7900core)
+rx7900_cpp_target(rx7900output)
+
+# Only pure CPU unit tests use this helper. Guest service tests stay opt-in.
+function(rx7900_unit_test test_name target source library)
+    add_executable(${target} ${source})
+    target_link_libraries(${target} PRIVATE ${library})
+    target_include_directories(${target} PRIVATE src/common)
+    if(MINGW)
+        target_link_options(${target} PRIVATE -static -static-libgcc -static-libstdc++)
+    endif()
+    rx7900_cpp_target(${target})
+    add_test(NAME ${test_name} COMMAND ${target})
+endfunction()
+
+if(COMMAND set_module_type)
+    add_library(rx7900probe MODULE src/reactos/driver.cpp)
+    set_module_type(rx7900probe kernelmodedriver)
+    target_link_libraries(rx7900probe rx7900core libcntpr)
+    add_importlibs(rx7900probe ntoskrnl hal)
+    set_target_properties(rx7900probe rx7900core rx7900firmware rx7900memory
+        rx7900sdma rx7900display rx7900output rx7900psp rx7900discovery rx7900asic
+        rx7900lightningprotocol rx7900lightningexchange rx7900lightninggdi
+        PROPERTIES WITH_CXX_EXCEPTIONS FALSE
+        WITH_CXX_RTTI FALSE)
+    # DDK headers use their own compiler extensions; common code remains strict.
+    set_target_properties(rx7900probe PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_cd_file(TARGET rx7900probe DESTINATION reactos/bin FOR all)
+
+    add_library(lightningnt5 MODULE src/reactos/lightning_driver.cpp
+        src/reactos/lightning_transport.cpp src/reactos/lightning_renderer.cpp
+        src/reactos/lightning_driver.rc)
+    set_module_type(lightningnt5 kernelmodedriver)
+    target_link_libraries(lightningnt5 rx7900lightningexchange pseh libcntpr)
+    add_importlibs(lightningnt5 ntoskrnl hal)
+    set_target_properties(lightningnt5 PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES
+        WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+    if(RX7900_LIGHTNING_TRANSPORT_TIMING)
+        target_compile_definitions(lightningnt5 PRIVATE RX7900_LIGHTNING_TRANSPORT_TIMING)
+    endif()
+    if(RX7900_LIGHTNING_POSTED_SUBMIT)
+        target_compile_definitions(lightningnt5 PRIVATE RX7900_LIGHTNING_POSTED_SUBMIT)
+    endif()
+
+    add_library(lightningvideo MODULE src/reactos/lightning_video.cpp src/reactos/lightning_video.rc)
+    set_module_type(lightningvideo kernelmodedriver)
+    target_include_directories(lightningvideo PRIVATE src/reactos src/common src/display)
+    target_link_libraries(lightningvideo rx7900lightningscanout rx7900display libcntpr)
+    add_importlibs(lightningvideo videoprt ntoskrnl hal)
+    set_target_properties(lightningvideo rx7900lightningscanout PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES
+        WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+    if(RX7900_LIGHTNING_GDI_OFFLOAD)
+        target_sources(lightningvideo PRIVATE src/reactos/lightning_gdi_native.cpp
+            src/reactos/lightning_gdi_completion.cpp)
+        # These functions run below nested engine/cursor callbacks on the NT
+        # kernel stack. Keep decoded commands and ledgers in device storage.
+        set_property(SOURCE src/reactos/lightning_gdi_native.cpp
+            src/reactos/lightning_gdi_completion.cpp third_party/qemu_lightning/gdi_protocol.cpp APPEND PROPERTY COMPILE_OPTIONS
+            "$<$<CXX_COMPILER_ID:GNU>:-Wframe-larger-than=512>")
+        target_compile_definitions(lightningvideo PRIVATE RX7900_LIGHTNING_GDI_OFFLOAD)
+        target_link_libraries(lightningvideo rx7900lightninggdi)
+    endif()
+
+    # Opt-in debug fault knob for the VM removal/lost-ack exercise package.
+    # When ON, lightningvideo reads Device0\LeaseFaultPlan and injects dropped
+    # or lost staging-release acknowledgements (lightning_staging_resolve.hpp
+    # StagingFaultPlan). Default OFF: no registry read, no behaviour change.
+    # Built privately for work/root-tools/lightning-removal; never into the
+    # shipped Binaries package unless explicitly requested.
+    option(RX7900_LIGHTNING_LEASE_FAULTS
+        "Inject staging lease-ack faults from Device0 LeaseFaultPlan (VM test build)" OFF)
+    if(RX7900_LIGHTNING_LEASE_FAULTS)
+        target_compile_definitions(lightningvideo PRIVATE RX7900_LIGHTNING_LEASE_FAULTS)
+    endif()
+
+    set(native_framebuf "${REACTOS_SOURCE_DIR}/win32ss/drivers/displays/framebuf")
+    add_library(lightningdisp MODULE
+        "${native_framebuf}/enable.c" "${native_framebuf}/palette.c"
+        "${native_framebuf}/pointer.c" "${native_framebuf}/screen.c"
+        "${native_framebuf}/surface.c" src/reactos/lightning_display.rc
+        src/reactos/framebuffer_shadow.cpp src/reactos/lightning_display.cpp)
+    set_module_type(lightningdisp kerneldll ENTRYPOINT DrvEnableDriver 12)
+    target_include_directories(lightningdisp PRIVATE "${native_framebuf}"
+        src/reactos third_party/qemu_lightning)
+    target_compile_definitions(lightningdisp PRIVATE
+        RX7900_FRAMEBUFFER_SHADOW RX7900_LIGHTNING_DISPLAY)
+    if(RX7900_LIGHTNING_GDI_OFFLOAD)
+        target_sources(lightningdisp PRIVATE src/reactos/lightning_gdi_client.cpp
+            src/reactos/framebuffer_stretch_guard.cpp src/reactos/framebuffer_primitives.cpp)
+        target_compile_definitions(lightningdisp PRIVATE RX7900_LIGHTNING_GDI_OFFLOAD)
+        target_link_libraries(lightningdisp rx7900lightninggdi rx7900linecoverage)
+    endif()
+    target_link_libraries(lightningdisp libcntpr)
+    add_importlibs(lightningdisp win32k)
+    set_target_properties(lightningdisp PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES
+        WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+
+    add_library(rx7900hardware STATIC src/reactos/hardware.cpp src/reactos/driver_blob.cpp src/reactos/firmware_file.cpp
+        src/reactos/dma.cpp src/reactos/asic_bringup.cpp src/reactos/vbios.cpp
+        src/reactos/pci_config.cpp src/reactos/vram_window.cpp src/reactos/fence_native.cpp)
+    target_link_libraries(rx7900hardware PUBLIC rx7900core rx7900firmware rx7900memory rx7900asic)
+    set_target_properties(rx7900hardware PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES
+        WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+    add_library(rx7900video MODULE src/reactos/video.cpp
+        src/reactos/gpu_process.cpp src/reactos/process_memory.cpp
+        src/reactos/process_submission.cpp)
+    set_module_type(rx7900video kernelmodedriver)
+    target_link_libraries(rx7900video rx7900hardware rx7900output libcntpr)
+    target_sources(rx7900video PRIVATE src/reactos/dcn32_hpd_native.cpp
+        src/reactos/dcn32_aux_native.cpp)
+    add_importlibs(rx7900video videoprt ntoskrnl hal)
+    set_target_properties(rx7900video PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES
+        WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+    # Experimental, incomplete display initialization: no INF binding or CD install.
+
+    add_executable(rx7900ctl src/tools/control.cpp)
+    target_include_directories(rx7900ctl PRIVATE src/common)
+    set_module_type(rx7900ctl win32cui UNICODE)
+    add_importlibs(rx7900ctl advapi32 msvcrt kernel32)
+    set_target_properties(rx7900ctl PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+    add_cd_file(TARGET rx7900ctl DESTINATION reactos/bin FOR all)
+
+    add_executable(lightningnt5ctl src/tools/lightning_control.cpp)
+    target_link_libraries(lightningnt5ctl rx7900lightningabi)
+    target_include_directories(lightningnt5ctl PRIVATE src/common src/reactos
+        third_party/qemu_lightning)
+    set_module_type(lightningnt5ctl win32cui UNICODE)
+    add_importlibs(lightningnt5ctl setupapi newdev advapi32 gdi32 user32 msvcrt kernel32)
+    set_target_properties(lightningnt5ctl PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+
+    add_executable(framebuffer_guest_smoke tests/framebuffer_guest_smoke.cpp)
+    target_link_libraries(framebuffer_guest_smoke rx7900lightningabi)
+    target_include_directories(framebuffer_guest_smoke PRIVATE src/common src/tools)
+    set_module_type(framebuffer_guest_smoke win32cui UNICODE)
+    add_importlibs(framebuffer_guest_smoke msimg32 gdi32 user32 msvcrt kernel32)
+    set_target_properties(framebuffer_guest_smoke PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+
+    add_executable(framebuffer_resize_guest tests/framebuffer_resize_guest.cpp)
+    target_link_libraries(framebuffer_resize_guest rx7900lightningabi)
+    target_include_directories(framebuffer_resize_guest PRIVATE src/common src/tools)
+    set_module_type(framebuffer_resize_guest win32cui)
+    add_importlibs(framebuffer_resize_guest gdi32 user32 msvcrt kernel32)
+    set_target_properties(framebuffer_resize_guest PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+
+    add_executable(framebuffer_text_batch_tests tests/framebuffer_text_batch_tests.cpp
+        src/reactos/framebuffer_text_batch.cpp)
+    target_include_directories(framebuffer_text_batch_tests PRIVATE src/reactos)
+    set_module_type(framebuffer_text_batch_tests win32cui)
+    add_importlibs(framebuffer_text_batch_tests msvcrt kernel32)
+    set_target_properties(framebuffer_text_batch_tests PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+
+    add_executable(framebuffer_cursor_recovery_tests tests/framebuffer_cursor_recovery_tests.cpp
+        src/reactos/framebuffer_cursor_recovery.cpp)
+    target_include_directories(framebuffer_cursor_recovery_tests PRIVATE src/reactos)
+    set_module_type(framebuffer_cursor_recovery_tests win32cui)
+    add_importlibs(framebuffer_cursor_recovery_tests msvcrt kernel32)
+    set_target_properties(framebuffer_cursor_recovery_tests PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+
+    add_executable(framebuffer_stretch_guard_tests tests/framebuffer_stretch_guard_tests.cpp
+        src/reactos/framebuffer_stretch_guard.cpp)
+    target_include_directories(framebuffer_stretch_guard_tests PRIVATE src/reactos
+        third_party/qemu_lightning)
+    set_module_type(framebuffer_stretch_guard_tests win32cui)
+    add_importlibs(framebuffer_stretch_guard_tests msvcrt kernel32)
+    set_target_properties(framebuffer_stretch_guard_tests PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+
+    add_executable(framebuffer_draw_escape_owner_tests tests/framebuffer_draw_escape_owner_tests.cpp
+        src/reactos/framebuffer_draw_escape.cpp)
+    target_include_directories(framebuffer_draw_escape_owner_tests PRIVATE src/reactos
+        "${REACTOS_SOURCE_DIR}/win32ss" "${REACTOS_SOURCE_DIR}/win32ss/include"
+        "${REACTOS_SOURCE_DIR}/ntoskrnl/include"
+        "${REACTOS_SOURCE_DIR}/sdk/lib/3rdparty/freetype/include"
+        "${REACTOS_SOURCE_DIR}/sdk/include/reactos/subsys"
+        "${REACTOS_SOURCE_DIR}/sdk/include/reactos/drivers")
+    target_compile_definitions(framebuffer_draw_escape_owner_tests PRIVATE
+        _WIN32K_ RX7900_FRAMEBUFFER_WINDOW_VISIBILITY)
+    # Link only the actual owner gates. Other production syscall sections retain
+    # kernel imports and are deliberately outside this user-mode SDK fixture.
+    target_compile_options(framebuffer_draw_escape_owner_tests PRIVATE
+        "$<$<CXX_COMPILER_ID:GNU>:-ffunction-sections;-fdata-sections;-fno-unwind-tables;-fno-asynchronous-unwind-tables>")
+    set_module_type(framebuffer_draw_escape_owner_tests win32cui)
+    add_importlibs(framebuffer_draw_escape_owner_tests msvcrt kernel32)
+    set_target_properties(framebuffer_draw_escape_owner_tests PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+
+    # Exercise the real native process-service retirement gate and its existing
+    # queue/memory owners without linking or driving the physical ASIC.
+    add_executable(gpu_process_restart_tests tests/gpu_process_restart_tests.cpp
+        src/reactos/gpu_process.cpp src/reactos/process_memory.cpp
+        src/reactos/process_submission.cpp src/hardware/user_queue.cpp)
+    target_include_directories(gpu_process_restart_tests PRIVATE src/reactos
+        src/hardware src/memory src/common src/display src/output src/acceleration)
+    target_compile_definitions(gpu_process_restart_tests PRIVATE _NTOSKRNL_ _VIDEOPORT_)
+    target_compile_options(gpu_process_restart_tests PRIVATE
+        "$<$<CXX_COMPILER_ID:GNU>:-ffunction-sections;-fdata-sections;-fno-unwind-tables;-fno-asynchronous-unwind-tables>")
+    target_link_options(gpu_process_restart_tests PRIVATE
+        "$<$<CXX_COMPILER_ID:GNU>:-Wl,--gc-sections;-static-libgcc>")
+    set_module_type(gpu_process_restart_tests win32cui)
+    add_importlibs(gpu_process_restart_tests msvcrt kernel32)
+    set_target_properties(gpu_process_restart_tests PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+
+    add_executable(framebuffer_clip_visibility_tests tests/framebuffer_clip_visibility_tests.cpp
+        src/reactos/framebuffer_clip_visibility.cpp)
+    target_include_directories(framebuffer_clip_visibility_tests PRIVATE src/reactos)
+    set_module_type(framebuffer_clip_visibility_tests win32cui)
+    add_importlibs(framebuffer_clip_visibility_tests msvcrt kernel32)
+    set_target_properties(framebuffer_clip_visibility_tests PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+
+    add_executable(radeon_bridge_tests tests/radeon_bridge_tests.cpp
+        src/reactos/radeon_bridge.cpp src/reactos/framebuffer_stretch_guard.cpp)
+    target_include_directories(radeon_bridge_tests PRIVATE src/reactos third_party/qemu_lightning
+        src/common src/acceleration src/hardware src/memory)
+    set_module_type(radeon_bridge_tests win32cui)
+    add_importlibs(radeon_bridge_tests msvcrt kernel32)
+    set_target_properties(radeon_bridge_tests PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+
+    add_executable(radeon_devbitmap_bridge_tests tests/radeon_devbitmap_bridge_tests.cpp
+        src/reactos/radeon_devbitmap_bridge.cpp)
+    target_include_directories(radeon_devbitmap_bridge_tests PRIVATE src/reactos src/common)
+    set_module_type(radeon_devbitmap_bridge_tests win32cui)
+    add_importlibs(radeon_devbitmap_bridge_tests msvcrt kernel32)
+    set_target_properties(radeon_devbitmap_bridge_tests PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+
+    add_executable(radeon_devbitmap_ddi_tests tests/radeon_devbitmap_ddi_tests.cpp
+        src/reactos/radeon_display.cpp src/reactos/radeon_cursor_client.cpp
+        src/reactos/radeon_2d_ioctl.cpp src/reactos/radeon_devbitmap_bridge.cpp
+        src/reactos/framebuffer_stretch_guard.cpp)
+    target_include_directories(radeon_devbitmap_ddi_tests PRIVATE src src/reactos src/common
+        src/acceleration src/hardware third_party/qemu_lightning tests)
+    target_compile_definitions(radeon_devbitmap_ddi_tests PRIVATE _ENGINE_EXPORT_)
+    set_module_type(radeon_devbitmap_ddi_tests win32cui)
+    add_importlibs(radeon_devbitmap_ddi_tests msvcrt kernel32)
+    set_target_properties(radeon_devbitmap_ddi_tests PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+
+    add_executable(framebuffer_brush_origin_tests tests/framebuffer_brush_origin_tests.cpp
+        src/reactos/framebuffer_brush_origin.cpp)
+    target_include_directories(framebuffer_brush_origin_tests PRIVATE src/reactos)
+    set_module_type(framebuffer_brush_origin_tests win32cui)
+    add_importlibs(framebuffer_brush_origin_tests msvcrt kernel32)
+    set_target_properties(framebuffer_brush_origin_tests PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+
+    add_executable(lightning_gdi_client_tests tests/lightning_gdi_client_tests.cpp
+        src/reactos/lightning_gdi_client.cpp)
+    target_link_libraries(lightning_gdi_client_tests rx7900lightninggdi)
+    target_include_directories(lightning_gdi_client_tests PRIVATE "${native_framebuf}"
+        src/reactos third_party/qemu_lightning)
+    target_compile_definitions(lightning_gdi_client_tests PRIVATE _ENGINE_EXPORT_ RX7900_FRAMEBUFFER_SHADOW)
+    set_module_type(lightning_gdi_client_tests win32cui)
+    add_importlibs(lightning_gdi_client_tests msvcrt kernel32)
+    set_target_properties(lightning_gdi_client_tests PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+
+    add_executable(brush_snapshot_tests tests/brush_snapshot_tests.cpp src/reactos/line_coverage.cpp)
+    target_link_libraries(brush_snapshot_tests rx7900lightninggdi)
+    target_include_directories(brush_snapshot_tests PRIVATE "${native_framebuf}"
+        src/reactos third_party/qemu_lightning)
+    target_compile_definitions(brush_snapshot_tests PRIVATE _ENGINE_EXPORT_ RX7900_FRAMEBUFFER_SHADOW)
+    set_module_type(brush_snapshot_tests win32cui)
+    add_importlibs(brush_snapshot_tests msvcrt kernel32)
+    set_target_properties(brush_snapshot_tests PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+
+    add_executable(lightning_gdi_native_query_tests tests/lightning_gdi_native_query_tests.cpp
+        src/reactos/lightning_gdi_native.cpp)
+    target_link_libraries(lightning_gdi_native_query_tests rx7900lightninggdi)
+    target_include_directories(lightning_gdi_native_query_tests PRIVATE src/reactos src/common
+        third_party/qemu_lightning)
+    target_compile_definitions(lightning_gdi_native_query_tests PRIVATE _NTOSKRNL_ _VIDEOPORT_)
+    set_module_type(lightning_gdi_native_query_tests win32cui)
+    add_importlibs(lightning_gdi_native_query_tests msvcrt kernel32)
+    set_target_properties(lightning_gdi_native_query_tests PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+
+    add_executable(lightning_gdi_completion_tests tests/lightning_gdi_completion_tests.cpp
+        src/reactos/lightning_gdi_completion.cpp)
+    target_include_directories(lightning_gdi_completion_tests PRIVATE src/reactos src/common
+        third_party/qemu_lightning)
+    target_compile_definitions(lightning_gdi_completion_tests PRIVATE _NTOSKRNL_ _VIDEOPORT_)
+    set_module_type(lightning_gdi_completion_tests win32cui)
+    add_importlibs(lightning_gdi_completion_tests msvcrt kernel32)
+    set_target_properties(lightning_gdi_completion_tests PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+
+    add_executable(lightning_cursor_lifecycle_tests tests/lightning_cursor_lifecycle_tests.cpp
+        src/reactos/lightning_display.cpp)
+    target_include_directories(lightning_cursor_lifecycle_tests PRIVATE "${native_framebuf}"
+        src/reactos third_party/qemu_lightning)
+    target_compile_definitions(lightning_cursor_lifecycle_tests PRIVATE _ENGINE_EXPORT_ RX7900_FRAMEBUFFER_SHADOW)
+    set_module_type(lightning_cursor_lifecycle_tests win32cui)
+    add_importlibs(lightning_cursor_lifecycle_tests msvcrt kernel32)
+    set_target_properties(lightning_cursor_lifecycle_tests PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+
+    add_executable(lightning_lease_transfer_tests tests/lightning_lease_transfer_tests.cpp
+        src/reactos/framebuffer_shadow.cpp src/reactos/lightning_display.cpp)
+    target_include_directories(lightning_lease_transfer_tests PRIVATE "${native_framebuf}"
+        src/reactos third_party/qemu_lightning)
+    target_compile_definitions(lightning_lease_transfer_tests PRIVATE _ENGINE_EXPORT_
+        RX7900_FRAMEBUFFER_SHADOW RX7900_LIGHTNING_DISPLAY)
+    set_module_type(lightning_lease_transfer_tests win32cui)
+    add_importlibs(lightning_lease_transfer_tests msvcrt kernel32)
+    set_target_properties(lightning_lease_transfer_tests PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+
+    add_executable(wglgears_close_smoke tests/wglgears_close_smoke.cpp)
+    target_include_directories(wglgears_close_smoke PRIVATE src/common src/tools)
+    set_module_type(wglgears_close_smoke win32cui UNICODE)
+    add_importlibs(wglgears_close_smoke gdi32 user32 msvcrt kernel32)
+    set_target_properties(wglgears_close_smoke PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+
+    add_executable(rx7900_guest_smoke tests/guest_smoke.cpp)
+    target_include_directories(rx7900_guest_smoke PRIVATE src/common src/tools)
+    set_module_type(rx7900_guest_smoke win32cui UNICODE)
+    add_importlibs(rx7900_guest_smoke advapi32 msvcrt kernel32)
+    set_target_properties(rx7900_guest_smoke PROPERTIES CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED YES)
+else()
+    add_library(rx7900glfrontend STATIC src/opengl/fixed_function.cpp src/opengl/gfx11.cpp)
+    target_include_directories(rx7900glfrontend PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/opengl")
+    target_link_libraries(rx7900glfrontend PUBLIC rx7900memory)
+    rx7900_cpp_target(rx7900glfrontend)
+
+    # Physical Radeon WGL OpenGL ICD: portable GL 1.1 state machine, software
+    # reference rasterizer and clipper, plus the GFX11 fixed-function shader
+    # generator. The ICD DLL (src/opengl/icd) and the host tests consume these.
+    add_library(rx7900gl STATIC src/opengl/gl_pipeline.cpp src/opengl/gl_clip.cpp
+        src/opengl/gl_raster.cpp src/opengl/gl_context.cpp)
+    target_include_directories(rx7900gl PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/opengl")
+    rx7900_cpp_target(rx7900gl)
+    add_library(rx7900glshader STATIC src/opengl/gl_shader_gfx11.cpp)
+    target_include_directories(rx7900glshader PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/opengl")
+    target_link_libraries(rx7900glshader PUBLIC rx7900raster2d)
+    rx7900_cpp_target(rx7900glshader)
+    add_executable(rx7900inspect src/tools/inspect.cpp)
+    target_link_libraries(rx7900inspect PRIVATE rx7900core rx7900output rx7900firmware)
+    rx7900_cpp_target(rx7900inspect)
+
+    if(WIN32)
+        add_executable(framebuffer_guest_smoke tests/framebuffer_guest_smoke.cpp)
+        target_include_directories(framebuffer_guest_smoke PRIVATE src/common src/tools)
+        target_link_libraries(framebuffer_guest_smoke PRIVATE rx7900lightningabi)
+        target_compile_definitions(framebuffer_guest_smoke PRIVATE UNICODE _UNICODE)
+        target_link_libraries(framebuffer_guest_smoke PRIVATE msimg32 gdi32 user32)
+        if(MINGW)
+            target_link_options(framebuffer_guest_smoke PRIVATE -municode -static -static-libgcc -static-libstdc++)
+        endif()
+        rx7900_cpp_target(framebuffer_guest_smoke)
+
+        add_executable(framebuffer_resize_guest tests/framebuffer_resize_guest.cpp)
+        target_link_libraries(framebuffer_resize_guest PRIVATE rx7900lightningabi)
+        target_include_directories(framebuffer_resize_guest PRIVATE src/common src/tools)
+        target_link_libraries(framebuffer_resize_guest PRIVATE gdi32 user32)
+        if(MINGW)
+            target_link_options(framebuffer_resize_guest PRIVATE -static -static-libgcc -static-libstdc++)
+        endif()
+        rx7900_cpp_target(framebuffer_resize_guest)
+
+        add_executable(lightningnt5ctl src/tools/lightning_control.cpp)
+        target_link_libraries(lightningnt5ctl PRIVATE rx7900lightningabi)
+        target_include_directories(lightningnt5ctl PRIVATE src/common src/reactos
+            third_party/qemu_lightning)
+        target_compile_definitions(lightningnt5ctl PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+        target_link_libraries(lightningnt5ctl PRIVATE setupapi cfgmgr32 newdev advapi32 gdi32 user32)
+        if(MINGW)
+            target_link_options(lightningnt5ctl PRIVATE -municode -static -static-libgcc -static-libstdc++)
+        endif()
+        rx7900_cpp_target(lightningnt5ctl)
+
+        add_executable(rx7900ctl src/tools/control.cpp)
+        target_include_directories(rx7900ctl PRIVATE src/common)
+        target_compile_definitions(rx7900ctl PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+        target_link_libraries(rx7900ctl PRIVATE advapi32)
+        if(MINGW)
+            target_link_options(rx7900ctl PRIVATE -municode -static -static-libgcc -static-libstdc++)
+            target_link_options(rx7900inspect PRIVATE -static -static-libgcc -static-libstdc++)
+        endif()
+        rx7900_cpp_target(rx7900ctl)
+    endif()
+
+    if(BUILD_TESTING)
+        rx7900_unit_test(common_parsers rx7900_common_tests tests/common_tests.cpp rx7900core)
+        rx7900_unit_test(multisz_bounds rx7900_multisz_tests tests/multisz_tests.cpp rx7900core)
+        target_include_directories(rx7900_multisz_tests PRIVATE src)
+        rx7900_unit_test(sdma_packets rx7900_acceleration_tests
+            tests/acceleration_tests.cpp rx7900sdma)
+        rx7900_unit_test(display_modes rx7900_display_tests
+            tests/display_tests.cpp rx7900display)
+        rx7900_unit_test(dcn32_hpd rx7900_dcn32_hpd_tests
+            tests/dcn32_hpd_tests.cpp rx7900display)
+        rx7900_unit_test(output_discovery rx7900_output_tests
+            tests/output_tests.cpp rx7900output)
+        rx7900_unit_test(dp_link rx7900_dp_link_tests
+            tests/dp_link_tests.cpp rx7900output)
+        rx7900_unit_test(dp_training rx7900_dp_training_tests
+            tests/dp_training_tests.cpp rx7900output)
+        rx7900_unit_test(dcn32_aux rx7900_dcn32_aux_tests
+            tests/dcn32_aux_tests.cpp rx7900output)
+        rx7900_unit_test(dp_port_native rx7900_dp_port_native_tests
+            tests/dp_port_native_tests.cpp rx7900output)
+        rx7900_unit_test(firmware_containers rx7900_firmware_tests
+            tests/firmware_tests.cpp rx7900firmware)
+        target_include_directories(rx7900_firmware_tests PRIVATE src/tools)
+        rx7900_unit_test(ip_discovery rx7900_discovery_tests
+            tests/discovery_tests.cpp rx7900discovery)
+        target_include_directories(rx7900_discovery_tests PRIVATE src/acceleration)
+        rx7900_unit_test(lightning_transport_protocol rx7900_lightning_protocol_tests
+            tests/lightning_protocol_tests.cpp rx7900lightningprotocol)
+        rx7900_unit_test(lightning_renderer_exchange rx7900_lightning_exchange_tests
+            tests/lightning_exchange_policy_tests.cpp rx7900lightningexchange)
+        rx7900_unit_test(lightning_transport_timing rx7900_lightning_transport_timing_tests
+            tests/lightning_transport_timing_tests.cpp rx7900lightningexchange)
+        target_include_directories(rx7900_lightning_transport_timing_tests BEFORE PRIVATE
+            tests/transport_timing_native src/reactos)
+        target_compile_definitions(rx7900_lightning_transport_timing_tests PRIVATE
+            RX7900_LIGHTNING_TRANSPORT_TIMING)
+        rx7900_unit_test(framebuffer_shadow_policy rx7900_framebuffer_shadow_tests
+            tests/framebuffer_shadow_tests.cpp rx7900display)
+        target_include_directories(rx7900_framebuffer_shadow_tests PRIVATE src)
+        target_link_libraries(rx7900_framebuffer_shadow_tests PRIVATE rx7900lightningabi)
+        rx7900_unit_test(line_coverage rx7900_line_coverage_tests
+            tests/line_coverage_tests.cpp rx7900linecoverage)
+        rx7900_unit_test(stretch_mask rx7900_stretch_mask_tests
+            tests/stretch_mask_tests.cpp rx7900lightninggdi)
+        target_include_directories(rx7900_stretch_mask_tests PRIVATE src/reactos tests)
+        rx7900_unit_test(lightning_mode_lifecycle rx7900_lightning_mode_lifecycle_tests
+            tests/lightning_mode_lifecycle_tests.cpp rx7900lightningabi)
+        target_include_directories(rx7900_lightning_mode_lifecycle_tests PRIVATE src/reactos)
+        rx7900_unit_test(lightning_staging_retirement rx7900_lightning_staging_client_tests
+            tests/lightning_staging_client_tests.cpp rx7900lightningabi)
+        target_include_directories(rx7900_lightning_staging_client_tests PRIVATE src/reactos)
+        rx7900_unit_test(lightning_staging_resolve rx7900_lightning_staging_resolve_tests
+            tests/lightning_staging_resolve_tests.cpp rx7900lightningabi)
+        target_include_directories(rx7900_lightning_staging_resolve_tests PRIVATE src/reactos)
+        rx7900_unit_test(lightning_retirement rx7900_lightning_retirement_tests
+            tests/lightning_retirement_tests.cpp rx7900lightningabi)
+        target_include_directories(rx7900_lightning_retirement_tests PRIVATE src/reactos)
+        rx7900_unit_test(radeon_opengl_info rx7900_radeon_opengl_info_tests
+            tests/radeon_opengl_info_tests.cpp rx7900lightningabi)
+        target_include_directories(rx7900_radeon_opengl_info_tests PRIVATE src/reactos)
+        rx7900_unit_test(radeon_present rx7900_radeon_present_tests
+            tests/radeon_present_tests.cpp rx7900lightningabi)
+        target_include_directories(rx7900_radeon_present_tests PRIVATE src/reactos)
+        rx7900_unit_test(pnp_query_remove_model rx7900_pnp_query_remove_model_tests
+            tests/pnp_query_remove_model_tests.cpp rx7900core)
+        rx7900_unit_test(display_unload_model rx7900_display_unload_model_tests
+            tests/display_unload_model_tests.cpp rx7900core)
+        rx7900_unit_test(image_receipt rx7900_image_receipt_tests
+            tests/lightning_image_receipt_tests.cpp rx7900lightningabi)
+        target_include_directories(rx7900_image_receipt_tests PRIVATE src/reactos third_party/qemu_lightning)
+        rx7900_unit_test(lightning_cursor_geometry rx7900_lightning_cursor_tests
+            tests/lightning_cursor_tests.cpp rx7900lightningabi)
+        rx7900_unit_test(framebuffer_cache_boot rx7900_framebuffer_cache_boot_tests
+            tests/framebuffer_cache_boot_tests.cpp rx7900framebuffercache)
+        rx7900_unit_test(lightning_power_queue rx7900_lightning_power_queue_tests
+            tests/lightning_power_queue_tests.cpp rx7900lightningscanout)
+        rx7900_unit_test(psp_bootloader rx7900_psp_tests tests/psp_boot_tests.cpp rx7900psp)
+        rx7900_unit_test(vram_discovery rx7900_vram_discovery_tests
+            tests/vram_discovery_tests.cpp rx7900asic)
+        rx7900_unit_test(nbio_hdp rx7900_nbio_tests tests/nbio_tests.cpp rx7900asic)
+        rx7900_unit_test(ucode_catalog rx7900_ucode_tests tests/ucode_tests.cpp rx7900asic)
+        rx7900_unit_test(psp_km_ring rx7900_psp_ring_tests tests/psp_ring_tests.cpp rx7900asic)
+        rx7900_unit_test(smu13_mailbox rx7900_smu13_tests tests/smu13_tests.cpp rx7900asic)
+        rx7900_unit_test(asic_sequence rx7900_asic_init_tests tests/asic_init_tests.cpp rx7900asic)
+        rx7900_unit_test(atom_firmware_info rx7900_atom_firmware_tests
+            tests/atom_firmware_tests.cpp rx7900asic)
+        target_include_directories(rx7900_atom_firmware_tests PRIVATE src/acceleration)
+        rx7900_unit_test(psp_training rx7900_psp_training_tests tests/psp_training_tests.cpp rx7900asic)
+        rx7900_unit_test(gmc11_vm_hubs rx7900_gmc11_tests tests/gmc11_tests.cpp rx7900asic)
+        rx7900_unit_test(ih6_rings rx7900_ih6_tests tests/ih6_tests.cpp rx7900asic)
+        rx7900_unit_test(gfx11_core rx7900_gfx11_init_tests tests/gfx11_init_tests.cpp rx7900asic)
+        rx7900_unit_test(sdma6_rings rx7900_sdma6_init_tests tests/sdma6_init_tests.cpp rx7900asic)
+        rx7900_unit_test(mes11_scheduler rx7900_mes11_tests tests/mes11_tests.cpp rx7900asic)
+        rx7900_unit_test(gfx11_queues rx7900_gfx11_queues_tests tests/gfx11_queues_tests.cpp rx7900asic)
+        rx7900_unit_test(clock_gating rx7900_clock_gating_tests tests/clock_gating_tests.cpp rx7900asic)
+        rx7900_unit_test(irq_service rx7900_irq_service_tests tests/irq_service_tests.cpp rx7900asic)
+        rx7900_unit_test(mes_selftest rx7900_mes_selftest_tests tests/mes_selftest_tests.cpp rx7900asic)
+        rx7900_unit_test(vbios_rom rx7900_vbios_rom_tests tests/vbios_rom_tests.cpp rx7900asic)
+        rx7900_unit_test(psp_ta rx7900_psp_ta_tests tests/psp_ta_tests.cpp rx7900asic)
+        rx7900_unit_test(vram_allocator rx7900_vram_allocator_tests tests/vram_allocator_tests.cpp rx7900asic)
+        rx7900_unit_test(fence rx7900_fence_tests tests/fence_tests.cpp rx7900asic)
+        rx7900_unit_test(gpuvm rx7900_gpuvm_tests tests/gpuvm_tests.cpp rx7900asic)
+        rx7900_unit_test(user_queue rx7900_user_queue_tests tests/user_queue_tests.cpp rx7900asic)
+        rx7900_unit_test(process_submission rx7900_process_submission_tests
+            tests/process_submission_tests.cpp rx7900asic)
+        target_sources(rx7900_process_submission_tests PRIVATE
+            src/reactos/process_memory.cpp src/reactos/process_submission.cpp)
+        rx7900_unit_test(scheduler rx7900_scheduler_tests tests/scheduler_tests.cpp rx7900asic)
+        rx7900_unit_test(vram_reservations rx7900_vram_reservations_tests tests/vram_reservations_tests.cpp rx7900asic)
+        rx7900_unit_test(pci_caps rx7900_pci_caps_tests tests/pci_caps_tests.cpp rx7900core)
+        rx7900_unit_test(gpu_memory rx7900_memory_tests tests/memory_tests.cpp rx7900memory)
+        rx7900_unit_test(gpu_interrupts rx7900_interrupt_tests
+            tests/interrupt_tests.cpp rx7900sdma)
+        rx7900_unit_test(opengl_frontend rx7900_opengl_tests
+            tests/opengl_tests.cpp rx7900glfrontend)
+        rx7900_unit_test(opengl_context rx7900_opengl_context_tests
+            tests/opengl_context_tests.cpp rx7900gl)
+        rx7900_unit_test(opengl_shader rx7900_opengl_shader_tests
+            tests/opengl_shader_tests.cpp rx7900glshader)
+        target_include_directories(rx7900_opengl_shader_tests PRIVATE tests src/hardware
+            src/acceleration src/memory)
+        if(WIN32)
+            # The physical Radeon WGL ICD DLL and its loader-contract test, built
+            # with GCC13 MinGW and run under Wine (DrvValidateVersion through the
+            # 336-entry dispatch table and GDI-presented software rendering).
+            add_library(radeonglicd MODULE src/opengl/icd/icd.cpp src/opengl/icd/icd_dispatch.cpp)
+            target_include_directories(radeonglicd PRIVATE src/opengl src/opengl/icd src/reactos)
+            target_link_libraries(radeonglicd PRIVATE rx7900gl gdi32 user32)
+            set_target_properties(radeonglicd PROPERTIES PREFIX "" OUTPUT_NAME "radeonglicd")
+            target_link_options(radeonglicd PRIVATE -Wl,--kill-at -static -static-libgcc
+                -static-libstdc++)
+            rx7900_cpp_target(radeonglicd)
+
+            add_executable(opengl_icd_tests tests/opengl_icd_tests.cpp)
+            target_include_directories(opengl_icd_tests PRIVATE src/opengl/icd)
+            target_link_libraries(opengl_icd_tests PRIVATE gdi32 user32)
+            target_link_options(opengl_icd_tests PRIVATE -static -static-libgcc -static-libstdc++)
+            rx7900_cpp_target(opengl_icd_tests)
+            add_dependencies(opengl_icd_tests radeonglicd)
+            find_program(RX7900_WINE wine)
+            if(RX7900_WINE)
+                add_test(NAME opengl_icd COMMAND ${RX7900_WINE} $<TARGET_FILE:opengl_icd_tests>)
+                set_tests_properties(opengl_icd PROPERTIES
+                    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+                    ENVIRONMENT "WINEDEBUG=-all")
+            endif()
+        endif()
+        if(WIN32)
+            add_executable(rx7900_guest_smoke tests/guest_smoke.cpp)
+            target_include_directories(rx7900_guest_smoke PRIVATE src/common src/tools)
+            target_compile_definitions(rx7900_guest_smoke PRIVATE UNICODE _UNICODE
+                WIN32_LEAN_AND_MEAN)
+            target_link_libraries(rx7900_guest_smoke PRIVATE advapi32)
+            if(MINGW)
+                target_link_options(rx7900_guest_smoke PRIVATE -municode -static
+                    -static-libgcc -static-libstdc++)
+            endif()
+            rx7900_cpp_target(rx7900_guest_smoke)
+        endif()
+    endif()
+endif()
+
+# Pre-OS (VBIOS/GOP) DCN3.2 scanout adoption: read-only snapshot and decisions
+# over the display timing core and the hardware VRAM reservation map.
+add_library(rx7900preos STATIC src/display/preos_scanout.cpp)
+target_include_directories(rx7900preos PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/display")
+target_link_libraries(rx7900preos PUBLIC rx7900display rx7900asic)
+rx7900_cpp_target(rx7900preos)
+if(COMMAND set_module_type)
+    set_target_properties(rx7900preos PROPERTIES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+    # Native adapter compiled into the physical miniport; unused until video.cpp calls it.
+    target_sources(rx7900video PRIVATE src/reactos/preos_scanout_native.cpp)
+    target_include_directories(rx7900video PRIVATE src/display)
+    target_link_libraries(rx7900video rx7900preos)
+elseif(BUILD_TESTING)
+    rx7900_unit_test(preos_scanout rx7900_preos_scanout_tests tests/preos_scanout_tests.cpp rx7900preos)
+endif()
+
+# Physical Navi31 SDMA 6.0 2D engine: rectangle fill/copy/upload/readback IBs
+# submitted through a caller-supplied kernel-ring submitter (src/hardware/blit2d).
+add_library(rx7900blit2d STATIC src/hardware/blit2d.cpp)
+target_link_libraries(rx7900blit2d PUBLIC rx7900asic)
+rx7900_cpp_target(rx7900blit2d)
+if(COMMAND set_module_type)
+    set_target_properties(rx7900blit2d PROPERTIES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+elseif(BUILD_TESTING)
+    rx7900_unit_test(blit2d_engine rx7900_blit2d_tests tests/blit2d_tests.cpp rx7900blit2d)
+endif()
+
+# Physical Radeon 2D acceleration protocol (2026-10-22, appended).
+# rx7900radeon2d is the portable miniport dispatcher for the private IOCTLs in
+# src/reactos/radeon_2d_abi.hpp; host tests bind it to a fake 2D backend.
+add_library(rx7900radeon2d STATIC src/reactos/radeon_2d_ioctl.cpp)
+target_include_directories(rx7900radeon2d PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/reactos" "${CMAKE_CURRENT_SOURCE_DIR}/src/common"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/acceleration")
+rx7900_cpp_target(rx7900radeon2d)
+if(COMMAND set_module_type)
+    set_target_properties(rx7900radeon2d PROPERTIES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+    # Opt-in native integration (OFF until root adds the video.cpp hook):
+    #  - rx7900video compiles the dispatcher with its VideoPort glue;
+    #  - radeondisp is the physical GDI display DLL (InstalledDisplayDrivers).
+    option(RX7900_RADEON_2D "Build the physical Radeon 2D miniport glue and display DLL" OFF)
+    if(RX7900_RADEON_2D)
+        target_sources(rx7900video PRIVATE src/reactos/radeon_2d_ioctl.cpp)
+        target_include_directories(rx7900video PRIVATE src/reactos src/common src/acceleration)
+        target_compile_definitions(rx7900video PRIVATE RX7900_RADEON2D_VIDEOPORT)
+        target_link_libraries(rx7900video rx7900radeon2dbackend rx7900blit2d)
+        set_property(SOURCE src/reactos/radeon_2d_ioctl.cpp src/reactos/radeon_display.cpp
+            APPEND PROPERTY COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:GNU>:-Wframe-larger-than=512>")
+
+        add_library(radeondisp MODULE src/reactos/radeon_display.cpp)
+        set_module_type(radeondisp kerneldll ENTRYPOINT DrvEnableDriver 12)
+        target_include_directories(radeondisp PRIVATE src/reactos src/common src/acceleration)
+        target_link_libraries(radeondisp libcntpr)
+        add_importlibs(radeondisp win32k)
+        set_target_properties(radeondisp PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES
+            WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+    endif()
+elseif(BUILD_TESTING)
+    rx7900_unit_test(radeon_2d_ioctl rx7900_radeon_2d_ioctl_tests
+        tests/radeon_2d_ioctl_tests.cpp rx7900radeon2d)
+endif()
+
+# Physical Radeon 2D backend (2026-10-22, appended): binds the radeon2d
+# Dispatcher's Blit2dBackend table to Blit2dEngine on SDMA1 kernel submission,
+# GTT staging/IBs and GPU-only VRAM surfaces (src/hardware/radeon_2d_backend).
+add_library(rx7900radeon2dbackend STATIC src/hardware/radeon_2d_backend.cpp)
+target_link_libraries(rx7900radeon2dbackend PUBLIC rx7900blit2d rx7900radeon2d)
+rx7900_cpp_target(rx7900radeon2dbackend)
+if(COMMAND set_module_type)
+    set_target_properties(rx7900radeon2dbackend PROPERTIES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+elseif(BUILD_TESTING)
+    rx7900_unit_test(radeon_2d_backend rx7900_radeon_2d_backend_tests
+        tests/radeon_2d_backend_tests.cpp rx7900radeon2dbackend)
+endif()
+
+# VBE linear-mode fallback for legacy (CSM) boots (2026-10-22, appended).
+# rx7900vbe is the portable VBE 2.0/3.0 parser and INT 10h sequence; the native
+# VideoPort Int10 binding is compiled into the physical miniport, unused until
+# video.cpp calls it (opt-in VbeModeSet=1 with PhysicalAsicInit=1).
+add_library(rx7900vbe STATIC src/display/vbe.cpp)
+target_include_directories(rx7900vbe PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/display")
+target_link_libraries(rx7900vbe PUBLIC rx7900output rx7900core)
+rx7900_cpp_target(rx7900vbe)
+if(COMMAND set_module_type)
+    set_target_properties(rx7900vbe PROPERTIES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+    target_sources(rx7900video PRIVATE src/reactos/vbe_modeset.cpp)
+    target_link_libraries(rx7900video rx7900vbe)
+elseif(BUILD_TESTING)
+    rx7900_unit_test(vbe_modeset rx7900_vbe_tests tests/vbe_tests.cpp rx7900vbe)
+    # Reuses the shared rx7900_test::Checks reporter from tests/asic_test_device.hpp.
+    target_link_libraries(rx7900_vbe_tests PRIVATE rx7900asic)
+    target_include_directories(rx7900_vbe_tests PRIVATE tests)
+endif()
+
+# DCN 3.2 hardware cursor (2026-10-22, appended, cursor agent): the register
+# protocol and image encoding on the adopted pre-OS pipe (src/display/dcn32_cursor),
+# the VideoPort pointer IOCTL glue (src/reactos/radeon_cursor_native, unused until
+# root applies the video.cpp hook) and the radeondisp pointer client.
+add_library(rx7900cursor STATIC src/display/dcn32_cursor.cpp)
+target_link_libraries(rx7900cursor PUBLIC rx7900preos)
+rx7900_cpp_target(rx7900cursor)
+if(COMMAND set_module_type)
+    set_target_properties(rx7900cursor PROPERTIES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+    target_sources(rx7900video PRIVATE src/reactos/radeon_cursor_native.cpp)
+    target_link_libraries(rx7900video rx7900cursor)
+    if(TARGET radeondisp)
+        target_sources(radeondisp PRIVATE src/reactos/radeon_cursor_client.cpp)
+    endif()
+elseif(BUILD_TESTING)
+    rx7900_unit_test(dcn32_cursor rx7900_dcn32_cursor_tests tests/dcn32_cursor_tests.cpp rx7900cursor)
+    rx7900_unit_test(radeon_cursor_policy rx7900_radeon_cursor_tests tests/radeon_cursor_tests.cpp rx7900cursor)
+    target_include_directories(rx7900_radeon_cursor_tests PRIVATE src/reactos)
+endif()
+
+# GFX11 compute 2D raster engine (2026-10-22, appended): the in-tree GFX11 ISA
+# encoder, the compute kernels for GDI operations SDMA cannot do (general ROP3/4,
+# patterns, mono/coverage8 glyphs, colour key, AlphaBlend, nearest stretch, lines,
+# gradients), and the PM4 compute dispatch engine. Reuses blit2d surface/clip types
+# and the shared memory::Manager; validated against the pinned LLVM GFX11 MC tests
+# and a CPU reference of the pinned GDI engine. Host-only tests.
+add_library(rx7900raster2d STATIC src/hardware/gfx11_isa.cpp src/hardware/raster2d_shaders.cpp
+    src/hardware/raster2d.cpp)
+target_link_libraries(rx7900raster2d PUBLIC rx7900blit2d)
+rx7900_cpp_target(rx7900raster2d)
+if(COMMAND set_module_type)
+    set_target_properties(rx7900raster2d PROPERTIES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+elseif(BUILD_TESTING)
+    rx7900_unit_test(gfx11_isa rx7900_gfx11_isa_tests tests/gfx11_isa_tests.cpp rx7900raster2d)
+    target_include_directories(rx7900_gfx11_isa_tests PRIVATE tests)
+    rx7900_unit_test(raster2d_engine rx7900_raster2d_tests tests/raster2d_tests.cpp rx7900raster2d)
+    target_include_directories(rx7900_raster2d_tests PRIVATE tests)
+endif()
+
+# Radeon 2D compute raster integration (2026-10-22, appended): the Radeon 2D
+# backend drives the raster2d compute engine beside SDMA (radeon_2d_backend),
+# and its end-to-end tests execute the compute IBs with the shared GFX11 ISA
+# interpreter (tests/gfx11_interp.hpp).
+target_link_libraries(rx7900radeon2dbackend PUBLIC rx7900raster2d)
+if(COMMAND set_module_type)
+    if(RX7900_RADEON_2D)
+        target_link_libraries(rx7900video rx7900raster2d)
+    endif()
+elseif(BUILD_TESTING)
+    target_include_directories(rx7900_radeon_2d_backend_tests PRIVATE tests)
+endif()
+
+# Guarded radeondisp DrvStretchBltROP and pattern lines (2026-10-22, appended,
+# stretch-lines agent): the host tests share the pinned-engine reference port
+# tests/gdi_engine_reference.hpp; radeondisp links the paired stretch guard's
+# Rx7900StretchGuardUnwrap (framebuffer_stretch_guard.cpp, used read-only).
+if(TARGET rx7900_radeon_2d_ioctl_tests)
+    target_include_directories(rx7900_radeon_2d_ioctl_tests PRIVATE tests)
+endif()
+if(TARGET rx7900_radeon_2d_backend_tests)
+    target_include_directories(rx7900_radeon_2d_backend_tests PRIVATE tests)
+endif()
+if(TARGET radeondisp)
+    target_sources(radeondisp PRIVATE src/reactos/framebuffer_stretch_guard.cpp)
+    target_include_directories(radeondisp PRIVATE third_party/qemu_lightning)
+endif()
+
+# GFX11 OpenGL shader pixel tests (gl-shaders, 2026-10-23, appended): the generated
+# NGG vertex and pixel programs run through the tests/gfx11_interp.hpp draw model and
+# are compared pixel by pixel with the gl_raster / gl_context software reference.
+if(NOT COMMAND set_module_type AND BUILD_TESTING)
+    rx7900_unit_test(opengl_shader_pixels rx7900_opengl_shader_pixel_tests
+        tests/opengl_shader_pixel_tests.cpp rx7900glshader)
+    target_link_libraries(rx7900_opengl_shader_pixel_tests PRIVATE rx7900gl)
+    target_include_directories(rx7900_opengl_shader_pixel_tests PRIVATE tests src/hardware
+        src/acceleration src/memory)
+endif()
+
+# GFX11 OpenGL pipeline (gl-pipeline, 2026-10-23, appended): register catalog and
+# state/PM4 emission (gfx11_state), the kernel-built graphics submission owner
+# (process_graphics) the native process service uses, and the user-mode GFX11 GL
+# backend. Host tests validate every register against the pinned GC 11.0.0
+# headers, execute kernel-built IBs in the pipeline model against gl_raster and
+# exercise the version-3 security boundary.
+set(RX7900_UPSTREAM_GPUINIT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../work/upstream-gpuinit"
+    CACHE PATH "Pinned upstream GPU references (gc_11_0_0 headers, Mesa 24.2.0 JSON)")
+if(COMMAND set_module_type)
+    target_sources(rx7900video PRIVATE src/reactos/process_graphics.cpp src/opengl/gfx11_state.cpp
+        src/opengl/gl_shader_gfx11.cpp)
+    target_include_directories(rx7900video PRIVATE src/opengl)
+    target_link_libraries(rx7900video rx7900raster2d)
+    target_sources(gpu_process_restart_tests PRIVATE src/reactos/process_graphics.cpp
+        src/opengl/gfx11_state.cpp src/opengl/gl_shader_gfx11.cpp src/hardware/gfx11_isa.cpp)
+    target_include_directories(gpu_process_restart_tests PRIVATE src/opengl)
+else()
+    add_library(rx7900glgfx11 STATIC src/opengl/gfx11_state.cpp src/opengl/gl_gfx11_backend.cpp)
+    target_include_directories(rx7900glgfx11 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/opengl"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/reactos" "${CMAKE_CURRENT_SOURCE_DIR}/src/acceleration"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/memory" "${CMAKE_CURRENT_SOURCE_DIR}/src/common")
+    target_link_libraries(rx7900glgfx11 PUBLIC rx7900gl rx7900glshader rx7900sdma)
+    rx7900_cpp_target(rx7900glgfx11)
+    if(BUILD_TESTING)
+        rx7900_unit_test(opengl_gfx11_registers rx7900_opengl_gfx11_registers_tests
+            tests/opengl_gfx11_registers_tests.cpp rx7900glgfx11)
+        rx7900_unit_test(opengl_gfx11_draw rx7900_opengl_gfx11_draw_tests
+            tests/opengl_gfx11_draw_tests.cpp rx7900glgfx11)
+        rx7900_unit_test(process_graphics rx7900_process_graphics_tests
+            tests/process_graphics_tests.cpp rx7900glgfx11)
+        foreach(test_target rx7900_opengl_gfx11_registers_tests rx7900_opengl_gfx11_draw_tests
+                rx7900_process_graphics_tests)
+            target_include_directories(${test_target} PRIVATE tests src/hardware src/acceleration
+                src/memory src/reactos)
+            target_compile_definitions(${test_target} PRIVATE
+                RX7900_UPSTREAM_GPUINIT_DIR="${RX7900_UPSTREAM_GPUINIT_DIR}"
+                RX7900_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+        endforeach()
+        foreach(test_target rx7900_opengl_gfx11_draw_tests rx7900_process_graphics_tests)
+            target_sources(${test_target} PRIVATE src/reactos/process_memory.cpp
+                src/reactos/process_graphics.cpp)
+            target_link_libraries(${test_target} PRIVATE rx7900asic)
+        endforeach()
+    endif()
+endif()
+# gl-pipeline (2026-10-23, appended): radeonglicd renders with the GFX11 backend
+# through its ExtEscape/DrawEscape transport; radeonglicd_fake replaces only the
+# transport with the fixture-backed fake device for the Wine ICD-level test.
+if(TARGET radeonglicd)
+    target_sources(radeonglicd PRIVATE src/opengl/icd/icd_transport.cpp)
+    target_link_libraries(radeonglicd PRIVATE rx7900glgfx11)
+    add_library(radeonglicd_fake MODULE src/opengl/icd/icd.cpp src/opengl/icd/icd_dispatch.cpp
+        tests/opengl_icd_fake_device.cpp src/reactos/process_memory.cpp src/reactos/process_graphics.cpp)
+    target_include_directories(radeonglicd_fake PRIVATE src/opengl src/opengl/icd src/reactos tests
+        src/hardware src/acceleration src/memory src/common)
+    target_compile_definitions(radeonglicd_fake PRIVATE
+        RX7900_UPSTREAM_GPUINIT_DIR="${RX7900_UPSTREAM_GPUINIT_DIR}")
+    target_link_libraries(radeonglicd_fake PRIVATE rx7900glgfx11 rx7900asic gdi32 user32)
+    set_target_properties(radeonglicd_fake PROPERTIES PREFIX "" OUTPUT_NAME "radeonglicd_fake")
+    target_link_options(radeonglicd_fake PRIVATE -Wl,--kill-at -static -static-libgcc -static-libstdc++)
+    rx7900_cpp_target(radeonglicd_fake)
+    add_executable(opengl_icd_gpu_tests tests/opengl_icd_gpu_tests.cpp)
+    target_include_directories(opengl_icd_gpu_tests PRIVATE src/opengl/icd)
+    target_link_libraries(opengl_icd_gpu_tests PRIVATE gdi32 user32)
+    target_link_options(opengl_icd_gpu_tests PRIVATE -static -static-libgcc -static-libstdc++)
+    rx7900_cpp_target(opengl_icd_gpu_tests)
+    add_dependencies(opengl_icd_gpu_tests radeonglicd_fake)
+    if(RX7900_WINE)
+        add_test(NAME opengl_icd_gpu COMMAND ${RX7900_WINE} $<TARGET_FILE:opengl_icd_gpu_tests>)
+        set_tests_properties(opengl_icd_gpu PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}" ENVIRONMENT "WINEDEBUG=-all")
+    endif()
+endif()
+# atom-repost (2026-10-24, appended): bounded VBIOS ATOM interpreter used by
+# AsicInit::repost (amdgpu_device_asic_init re-POST on resume and reset recovery).
+target_sources(rx7900asic PRIVATE src/hardware/atom_interpreter.cpp)
+
+# Physical Radeon installer (radeon-installer, 2026-10-24, appended): radeonctl
+# installs, upgrades, rolls back, removes and recovers rx7900video, radeondisp
+# and the opt-in radeonglicd through radeondisplay.inf. The engine runs over the
+# SystemOps seam (src/tools/radeon_installer.hpp); radeon_win32_system binds it
+# to Win32/SetupAPI and the host/Wine tests bind it to an in-memory fake.
+add_library(rx7900radeoninstaller STATIC src/tools/radeon_install_policy.cpp
+    src/tools/radeon_installer.cpp)
+target_include_directories(rx7900radeoninstaller PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/tools" "${CMAKE_CURRENT_SOURCE_DIR}/src/reactos"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/common" "${CMAKE_CURRENT_SOURCE_DIR}/src/hardware")
+target_link_libraries(rx7900radeoninstaller PUBLIC rx7900asic rx7900core)
+rx7900_cpp_target(rx7900radeoninstaller)
+if(COMMAND set_module_type)
+    set_target_properties(rx7900radeoninstaller PROPERTIES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+    add_executable(radeonctl src/tools/radeon_control.cpp src/tools/radeon_win32_system.cpp)
+    target_link_libraries(radeonctl rx7900radeoninstaller)
+    set_module_type(radeonctl win32cui UNICODE)
+    add_importlibs(radeonctl setupapi newdev advapi32 gdi32 user32 msvcrt kernel32)
+    set_target_properties(radeonctl PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES
+        WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+else()
+    if(WIN32)
+        add_executable(radeonctl src/tools/radeon_control.cpp src/tools/radeon_win32_system.cpp)
+        target_link_libraries(radeonctl PRIVATE rx7900radeoninstaller setupapi cfgmgr32 newdev
+            advapi32 gdi32 user32)
+        target_compile_definitions(radeonctl PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+        if(MINGW)
+            target_link_options(radeonctl PRIVATE -municode -static -static-libgcc -static-libstdc++)
+        endif()
+        rx7900_cpp_target(radeonctl)
+    endif()
+    if(BUILD_TESTING)
+        rx7900_unit_test(radeon_installer rx7900_radeon_installer_tests
+            tests/radeon_installer_tests.cpp rx7900radeoninstaller)
+        target_include_directories(rx7900_radeon_installer_tests PRIVATE tests src/acceleration
+            src/memory)
+        target_compile_definitions(rx7900_radeon_installer_tests PRIVATE
+            RX7900_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+        if(WIN32)
+            # Wine runs also check the real Win32 boot identity binding.
+            target_sources(rx7900_radeon_installer_tests PRIVATE src/tools/radeon_win32_system.cpp)
+            target_compile_definitions(rx7900_radeon_installer_tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+            target_link_libraries(rx7900_radeon_installer_tests PRIVATE setupapi cfgmgr32 newdev advapi32
+                gdi32 user32)
+        endif()
+    endif()
+endif()
+
+# atom-tests (2026-10-24, appended): ATOM interpreter semantics, reference
+# cross-check and mutation fuzzing, and the AsicInit re-POST path, over synthetic
+# VBIOS images assembled by tests/atom_test_builder.hpp (no binary fixtures).
+if(NOT COMMAND set_module_type AND BUILD_TESTING)
+    rx7900_unit_test(atom_interpreter rx7900_atom_interpreter_tests
+        tests/atom_interpreter_tests.cpp rx7900asic)
+    rx7900_unit_test(atom_repost rx7900_atom_repost_tests tests/atom_repost_tests.cpp rx7900asic)
+endif()
+
+# process-reconstruction (2026-10-24, appended): the portable native process
+# session state machine (gpu_process_core) behind gpu_process.cpp, with host
+# fault-injection tests of exit reaping and destructive-reset reconstruction,
+# plus the previously unwired process-memory and process-ABI fixtures.
+if(COMMAND set_module_type)
+    target_sources(rx7900video PRIVATE src/reactos/gpu_process_core.cpp)
+    target_sources(gpu_process_restart_tests PRIVATE src/reactos/gpu_process_core.cpp)
+elseif(BUILD_TESTING)
+    rx7900_unit_test(gpu_process_core rx7900_gpu_process_core_tests tests/gpu_process_core_tests.cpp
+        rx7900glgfx11)
+    target_sources(rx7900_gpu_process_core_tests PRIVATE src/reactos/gpu_process_core.cpp
+        src/reactos/process_memory.cpp src/reactos/process_submission.cpp src/reactos/process_graphics.cpp)
+    target_link_libraries(rx7900_gpu_process_core_tests PRIVATE rx7900asic)
+    target_include_directories(rx7900_gpu_process_core_tests PRIVATE tests src/hardware src/acceleration
+        src/memory src/reactos)
+    rx7900_unit_test(process_memory rx7900_process_memory_tests tests/process_memory_tests.cpp rx7900asic)
+    target_sources(rx7900_process_memory_tests PRIVATE src/reactos/process_memory.cpp)
+    rx7900_unit_test(gpu_process_abi rx7900_gpu_process_abi_tests tests/gpu_process_abi_tests.cpp rx7900core)
+endif()
+
+# dcn-link (2026-10-24, appended): physical Navi31 DCN 3.2 link side of the
+# display row: ATOM connector routes and DDC pads, DIO link encoder/PHY over the
+# VBIOS command tables, DC_I2C + HDMI SCDC, SMU13 DALSMC/DCCG clocks, DMCUB
+# start and inbox1, behind the DisplayLinkOwner consumed by dcn-stream. The
+# native adapter is compiled only with RX7900_DISPLAY_LINK=ON and does nothing
+# unless video.cpp (root) calls it with PhysicalAsicInit=1 and DisplayLinkOwner=1.
+add_library(rx7900displaylink STATIC src/output/dcn32_route.cpp
+    src/output/dcn32_link_encoder.cpp src/output/hdmi_scdc.cpp src/output/display_link.cpp
+    src/display/dcn32_clocks.cpp src/display/dcn32_dmub.cpp)
+target_include_directories(rx7900displaylink PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/output"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/display" "${CMAKE_CURRENT_SOURCE_DIR}/src/hardware")
+target_link_libraries(rx7900displaylink PUBLIC rx7900output rx7900asic)
+rx7900_cpp_target(rx7900displaylink)
+if(COMMAND set_module_type)
+    set_target_properties(rx7900displaylink PROPERTIES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+    option(RX7900_DISPLAY_LINK "Build the opt-in DCN 3.2 display link owner into rx7900video" OFF)
+    if(RX7900_DISPLAY_LINK)
+        target_sources(rx7900video PRIVATE src/reactos/display_link_native.cpp)
+        target_compile_definitions(rx7900video PRIVATE RX7900_DISPLAY_LINK)
+        target_link_libraries(rx7900video rx7900displaylink)
+        set_property(SOURCE src/reactos/display_link_native.cpp
+            APPEND PROPERTY COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:GNU>:-Wframe-larger-than=512>")
+    endif()
+elseif(BUILD_TESTING)
+    foreach(dcn_link_test dcn32_route dcn32_clocks dcn32_link_encoder hdmi_scdc dcn32_dmub display_link)
+        rx7900_unit_test(${dcn_link_test} rx7900_${dcn_link_test}_tests
+            tests/${dcn_link_test}_tests.cpp rx7900displaylink)
+        target_include_directories(rx7900_${dcn_link_test}_tests PRIVATE tests)
+    endforeach()
+endif()
+
+# submission-irq (2026-10-24, appended): the kernel gfx-ring route of
+# ProcessGraphics runs kernel-built draw IBs as process-VM jobs through the
+# trusted graphics lease owner (physical_submission) and its production bridge
+# to Gfx11Queues/FenceManager (kernel_graphics_bridge, native only).
+if(COMMAND set_module_type)
+    target_sources(rx7900video PRIVATE src/opengl/physical_submission.cpp src/opengl/kernel_graphics_bridge.cpp)
+    target_sources(gpu_process_restart_tests PRIVATE src/opengl/physical_submission.cpp
+        src/opengl/kernel_graphics_bridge.cpp)
+elseif(BUILD_TESTING)
+    foreach(test_target rx7900_opengl_gfx11_draw_tests rx7900_process_graphics_tests rx7900_gpu_process_core_tests)
+        if(TARGET ${test_target})
+            target_sources(${test_target} PRIVATE src/opengl/physical_submission.cpp)
+        endif()
+    endforeach()
+    rx7900_unit_test(opengl_physical_submission rx7900_opengl_physical_submission_tests
+        tests/opengl_physical_submission_tests.cpp rx7900asic)
+    target_sources(rx7900_opengl_physical_submission_tests PRIVATE src/opengl/physical_submission.cpp
+        src/opengl/kernel_graphics_bridge.cpp)
+    target_include_directories(rx7900_opengl_physical_submission_tests PRIVATE tests src/hardware
+        src/acceleration src/memory)
+endif()
+if(TARGET radeonglicd_fake)
+    target_sources(radeonglicd_fake PRIVATE src/opengl/physical_submission.cpp)
+endif()
+# submission-irq (2026-10-24, appended): thermal and RAS interrupt actions.
+target_sources(rx7900asic PRIVATE src/hardware/gpu_health.cpp)
+if(NOT COMMAND set_module_type AND BUILD_TESTING)
+    rx7900_unit_test(gpu_health rx7900_gpu_health_tests tests/gpu_health_tests.cpp rx7900asic)
+    target_include_directories(rx7900_gpu_health_tests PRIVATE tests src/hardware)
+endif()
+
+# radeongl-complete (2026-10-24, appended): the GFX11 GL paths that used to
+# migrate to software (stipple, GL_FRONT_AND_BACK, pixel rectangles, mipmaps,
+# surfaces over 16 MiB) through the production kernel modules and the PM4 model.
+if(BUILD_TESTING AND TARGET rx7900glgfx11 AND TARGET rx7900_opengl_gfx11_draw_tests)
+    rx7900_unit_test(opengl_pixel_paths rx7900_opengl_pixel_paths_tests
+        tests/opengl_pixel_paths_tests.cpp rx7900glgfx11)
+    get_target_property(rx7900_pixel_paths_sources rx7900_opengl_gfx11_draw_tests SOURCES)
+    get_target_property(rx7900_pixel_paths_libraries rx7900_opengl_gfx11_draw_tests LINK_LIBRARIES)
+    get_target_property(rx7900_pixel_paths_includes rx7900_opengl_gfx11_draw_tests INCLUDE_DIRECTORIES)
+    get_target_property(rx7900_pixel_paths_definitions rx7900_opengl_gfx11_draw_tests COMPILE_DEFINITIONS)
+    # Same kernel modules and fixture as opengl_gfx11_draw (whatever was added to it).
+    list(REMOVE_ITEM rx7900_pixel_paths_sources tests/opengl_gfx11_draw_tests.cpp)
+    target_sources(rx7900_opengl_pixel_paths_tests PRIVATE ${rx7900_pixel_paths_sources})
+    target_link_libraries(rx7900_opengl_pixel_paths_tests PRIVATE ${rx7900_pixel_paths_libraries})
+    target_include_directories(rx7900_opengl_pixel_paths_tests PRIVATE ${rx7900_pixel_paths_includes})
+    target_compile_definitions(rx7900_opengl_pixel_paths_tests PRIVATE ${rx7900_pixel_paths_definitions})
+    set_tests_properties(opengl_pixel_paths PROPERTIES TIMEOUT 1200)
+endif()
+
+# radeongl-complete (2026-10-24, appended): the NT side of submission-irq's
+# gpu_health (video.cpp calls gpu_health_start/consume/stop); without it the
+# native rx7900video.sys link fails on i386 and AMD64.
+if(COMMAND set_module_type AND TARGET rx7900video)
+    target_sources(rx7900video PRIVATE src/reactos/gpu_health_native.cpp)
+endif()
+
+# umc-ras (2026-10-24, appended): UMC 8.10 MCA error-record reader behind
+# gpu_health (VRAM ECC page retirement) and its synthetic register-model test.
+target_sources(rx7900asic PRIVATE src/hardware/umc_v8_10.cpp)
+if(NOT COMMAND set_module_type AND BUILD_TESTING)
+    rx7900_unit_test(umc_v8_10 rx7900_umc_v8_10_tests tests/umc_v8_10_tests.cpp rx7900asic)
+    target_include_directories(rx7900_umc_v8_10_tests PRIVATE tests src/hardware)
+endif()
+
+# dcn-stream (2026-10-24, appended): physical Navi31 DCN 3.2 stream side of the
+# display row: DML32 bandwidth/clock plan, HDMI/DP stream attributes and info
+# packets, and the OTG/OPP/MPC/DPP/HUBP stream and plane commit with recovery.
+# The native mode service is compiled only with RX7900_DISPLAY_STREAM=ON (which
+# needs RX7900_DISPLAY_LINK=ON) and does nothing unless the service key sets
+# DisplayModeSet=1 on top of PhysicalAsicInit=1 and DisplayLinkOwner=1.
+add_library(rx7900displaystream STATIC src/display/dcn32_bandwidth.cpp src/display/dcn32_dml_vba.cpp
+    src/display/dcn32_dml_support.cpp src/display/dcn32_dml_schedule.cpp src/display/dcn32_dml_surface.cpp
+    src/display/dcn32_dml_latency.cpp src/display/dcn32_dml_program.cpp src/display/dcn32_dml_rq_dlg.cpp
+    src/display/hdmi_stream.cpp src/display/dcn32_stream_encoder.cpp src/display/dcn32_stream.cpp)
+target_include_directories(rx7900displaystream PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/display"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/hardware")
+target_link_libraries(rx7900displaystream PUBLIC rx7900display rx7900core)
+rx7900_cpp_target(rx7900displaystream)
+set(RX7900_UPSTREAM_DCN_STREAM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../work/upstream-dcn-stream"
+    CACHE PATH "Pinned Linux v6.12 DCN 3.2 stream sources (register headers and reference code)")
+if(COMMAND set_module_type)
+    set_target_properties(rx7900displaystream PROPERTIES WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+    option(RX7900_DISPLAY_STREAM "Build the opt-in DCN 3.2 stream/plane mode service into rx7900video" OFF)
+    if(RX7900_DISPLAY_STREAM)
+        if(NOT RX7900_DISPLAY_LINK)
+            message(FATAL_ERROR "RX7900_DISPLAY_STREAM needs RX7900_DISPLAY_LINK")
+        endif()
+        target_sources(rx7900video PRIVATE src/reactos/dcn32_stream_native.cpp)
+        target_compile_definitions(rx7900video PRIVATE RX7900_DISPLAY_STREAM)
+        target_link_libraries(rx7900video rx7900displaystream)
+        # Kernel stack discipline (the DML32 port runs inside KeSaveFloatingPointState).
+        set_property(SOURCE src/reactos/dcn32_stream_native.cpp src/display/dcn32_stream.cpp
+            src/display/dcn32_stream_encoder.cpp src/display/hdmi_stream.cpp src/display/dcn32_bandwidth.cpp
+            src/display/dcn32_dml_vba.cpp src/display/dcn32_dml_support.cpp src/display/dcn32_dml_schedule.cpp
+            src/display/dcn32_dml_surface.cpp src/display/dcn32_dml_latency.cpp src/display/dcn32_dml_program.cpp
+            src/display/dcn32_dml_rq_dlg.cpp
+            APPEND PROPERTY COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:GNU>:-Wframe-larger-than=512>")
+    endif()
+elseif(BUILD_TESTING)
+    rx7900_unit_test(dcn32_bandwidth rx7900_dcn32_bandwidth_tests tests/dcn32_bandwidth_tests.cpp
+        rx7900displaystream)
+    rx7900_unit_test(hdmi_stream rx7900_hdmi_stream_tests tests/hdmi_stream_tests.cpp rx7900displaystream)
+    rx7900_unit_test(dcn32_stream rx7900_dcn32_stream_tests tests/dcn32_stream_tests.cpp rx7900displaystream)
+    rx7900_unit_test(dcn32_stream_registers rx7900_dcn32_stream_registers_tests
+        tests/dcn32_stream_registers_tests.cpp rx7900displaystream)
+    target_compile_definitions(rx7900_dcn32_stream_registers_tests PRIVATE
+        RX7900_UPSTREAM_DCN_STREAM_DIR="${RX7900_UPSTREAM_DCN_STREAM_DIR}"
+        RX7900_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_definitions(rx7900_dcn32_stream_tests PRIVATE
+        RX7900_UPSTREAM_DCN_STREAM_DIR="${RX7900_UPSTREAM_DCN_STREAM_DIR}")
+    foreach(dcn_stream_test dcn32_bandwidth hdmi_stream dcn32_stream dcn32_stream_registers)
+        target_include_directories(rx7900_${dcn_stream_test}_tests PRIVATE tests)
+        target_link_libraries(rx7900_${dcn_stream_test}_tests PRIVATE rx7900asic)
+    endforeach()
+endif()
+
+# dcn-restore-modes (2026-10-24, appended): EDID modes beyond detailed timings
+# (display/edid_modes: CVT codes, standard/established timings, CTA and HDMI
+# VICs, DisplayID detailed timings, range-limit DMT/CVT inference; own
+# implementation of the VESA/CTA/DisplayID standards) for the DisplayModeSet
+# mode list, and its host test.
+target_sources(rx7900displaystream PRIVATE src/display/edid_modes.cpp)
+if(COMMAND set_module_type)
+    if(RX7900_DISPLAY_STREAM)
+        set_property(SOURCE src/display/edid_modes.cpp
+            APPEND PROPERTY COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:GNU>:-Wframe-larger-than=512>")
+    endif()
+elseif(BUILD_TESTING)
+    rx7900_unit_test(edid_modes rx7900_edid_modes_tests tests/edid_modes_tests.cpp rx7900displaystream)
+    target_include_directories(rx7900_edid_modes_tests PRIVATE tests)
+    target_link_libraries(rx7900_edid_modes_tests PRIVATE rx7900output rx7900asic)
+endif()

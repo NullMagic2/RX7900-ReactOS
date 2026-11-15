@@ -1,0 +1,201 @@
+Module: rx7900.licenses.amdgpu_display
+Purpose: Preserve AMD display attribution and exact adaptation boundaries.
+Created: 2026-10-21
+Architecture: src/display/modes.cpp adapts timing validation and field preparation.
+
+Additional hardware adaptation, src/display/dcn32_otg.cpp:
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/dcn/dcn_3_2_0_offset.h
+SHA-256 1e693846c3c95226fb7daaa7b80822edb240da6513b331d8622656f56f5a425e
+Exact OTG0..3 register DWORD offsets and BASE_IDX=2, bank stride=0x80.
+Uses the dcn_3_2_0_sh_mask.h hash below for field widths and shifts, requested/
+current master-enable, clock/reset/busy, interlace/stereo/division, update locks
+and pending timing state. Both generated headers carry AMD's 2022 MIT notice
+preserved below. Segment2 base is supplied only by verified DMU3.2.0 IP discovery
+and checked against the actual owned MMIO aperture; no absolute physical or
+host-specific register base is hardcoded.
+
+Read-only HPD adaptation, src/display/dcn32_hpd.cpp: the same pinned DCN3.2
+offset and mask headers above supply HPD0..4_DC_HPD_INT_STATUS in segment2
+(first DWORD offset 0x1f14, stride 8) and DC_HPD_SENSE bit 1. The native
+adapter accepts only a validated DMU3.2.0 segment2 and an owned BAR5 mapping,
+plus an external proof of exact HPD pin routing and lease serialization. This
+does not initialize HPD, AUX/DDC, PHY, link clocks or DCN output.
+
+Reuses optc1_program_timing's ten horizontal/vertical total, sync, blank,
+polarity and vtotal-min/max register writes, but only for a proven disabled OTG.
+Existing prepare_optc_timing supplies all values. Unlike the full Linux function,
+this component does not program global synchronization/VTG, clocks, planes,
+pixel format/division, interlace, link training or OTG enable. Those remain
+required before real physical output. Each read-modify-write preserves unrelated
+bits and is confirmed by masked readback; all fields are rechecked after the
+batch. Caller explicitly holds actual ASIC/firmware ownership, stable clocks,
+exclusive register serialization and quiesced VTG/pipe/link. Guard reads before
+every write enforce disabled/current-disabled, clocks on and no reset/busy,
+unsupported division/interlace/stereo, dynamic-vtotal selection or hardware lock.
+Any potentially applied write followed by error/mismatch permanently quarantines
+the programmer instance; no optimistic retry or unproven rollback occurs.
+disabled_fields_verified proves only inactive register fields, never a working
+physical stream. No native caller enables this component yet because verified
+IP discovery and complete display initialization are absent.
+
+Linux v6.12 source, downloaded unmodified on 2026-10-21:
+
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/display/dc/optc/dcn10/dcn10_optc.c
+SHA-256 ebd9f31f41e3cfc5bee363b0ebcf21774be5dfb79136366e94f1dbfecd0e10a8
+Adapted: optc1_validate_timing blank/sync/total constraints; borderless progressive
+optc1_program_timing total-minus-one, blank start/end, sync-end and polarity fields.
+Added checked geometry; reject zero porch instead of silently patching timing.
+No register accesses, upstream runtime, locks, polling or memory allocation copied.
+
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/display/dc/optc/dcn32/dcn32_optc.c
+SHA-256 90fb755b0b4ea04a8dc4569af0ab8d7011d1f483874fde842c628043eff053b8
+Adapted: dcn32_timing_generator_init progressive minimum horizontal blank 32,
+vertical blank 3, horizontal sync 4, vertical sync 1. The DCN3.2 function table
+uses optc1_validate_timing and optc1_program_timing. Interlaced/stereo/borders,
+multi-pipe ODM, compression and dynamic refresh are unsupported by this component.
+
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/include/asic_reg/dcn/dcn_3_2_0_sh_mask.h
+SHA-256 f8554c0061f1b413a293cc15b2ea83e4e905b93cb093280411c0db38744b7ab6
+Adapted: OTG0 horizontal/vertical total, blank and sync field widths: 0x7fff.
+The total field stores total minus one, so the maximum representable total is
+32768; this is a field limit, not a claim about monitor, link or bandwidth limits.
+
+Research-only sources; no implementation copied:
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/display/dc/hwss/dcn32/dcn32_hwseq.c
+SHA-256 671491f8e710339c492ca39f8d7204e8a53ea75a31acb850a4855cbe399ad5bd
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/display/dc/resource/dcn32/dcn32_resource.c
+SHA-256 42a107ed6f5086298344b84a5ad3dd227dc35c6b9ac06f93942ed70d11d92deb
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/display/dc/dc_types.h
+SHA-256 8f77c7aeb915cb642bc242fa1ecc287c1f67e4b76a25df1578561a54be44c3db
+Hardware initialization includes resources, clocks, links, planes, BIOS services
+and DMUB prerequisites; these portable calculations are not a modeset sequence.
+
+Public-domain native ABI reference, ReactOS commit
+a97c8a2cdcf6a9a7f5cc543951a02ccb7a80d8ca:
+https://raw.githubusercontent.com/reactos/reactos/a97c8a2cdcf6a9a7f5cc543951a02ccb7a80d8ca/sdk/include/psdk/ntddvdeo.h
+SHA-256 cb73f0e78f48509328691316b2df31238511d4fb010922ebeef01eae350967d8
+VIDEO_MODE_MAP_MEM_LINEAR=0x40000000, VIDEO_MODE_NO_ZERO_MEMORY=0x80000000.
+Only these two native flag constants are represented locally for checked decoding;
+native miniports must use the DDK VIDEO_MODE_INFORMATION/VIDEO_NUM_MODES layouts.
+
+Copyright 2012-15 Advanced Micro Devices, Inc.
+Copyright 2022 Advanced Micro Devices, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+The register mask header carries this notice:
+
+Copyright (C) 2022 Advanced Micro Devices, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE COPYRIGHT HOLDER(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Additional Linux v6.12 adaptations, 2026-10-24 (DCN 3.2 display link owner; same AMD
+MIT-style notice as above): connector routes and DDC pads (link_factory.c, bios_parser2.c,
+gpio/dcn32/hw_translate_dcn32.c, gpio/hw_gpio.c, gpio/hw_ddc.c, gpio/ddc_regs.h), DIO link
+encoder and VBIOS PHY tables (dio/dcn32/dcn32_dio_link_encoder.c, dio/dcn10/dcn10_link_encoder.c,
+bios/command_table2.c, bios/dce112/command_table_helper2_dce112.c), DC_I2C and SCDC
+(dce/dce_i2c_hw.c, link/protocols/link_ddc.c), clocks (clk_mgr/dcn32/dcn32_clk_mgr.c,
+dcn32_clk_mgr_smu_msg.c, dalsmc.h, clk_mgr_internal.h, dccg/dcn20/dcn20_dccg.c,
+dccg/dcn32/dcn32_dccg.c, dce/dce_clock_source.c) and DMCUB (dmub/src/dmub_srv.c,
+dmub/src/dmub_dcn32.c, dmub/inc/dmub_cmd.h), all under
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/display/dc/ and
+.../display/dmub/. Rewritten in bounded C++17; no source text is copied.
+
+Additional Linux v6.12 adaptations, 2026-10-24 (DCN 3.2 stream owner; same AMD MIT-style
+notice as above): the DML32 core and its dcn32 glue (dml/display_mode_vba.c,
+dml/dcn32/display_mode_vba_32.c, display_mode_vba_util_32.c, display_rq_dlg_calc_32.c,
+dml/calcs/dcn_calc_math.c, dml/dcn32/dcn32_fpu.c, dml/dcn20/dcn20_fpu.c, dml/dcn30/dcn30_fpu.c,
+resource/dcn32/dcn32_resource.c, dcn32_resource_helpers.c) in src/display/dcn32_dml*.* and
+dcn32_bandwidth.*; the stream/plane sequences (core/dc.c, core/dc_resource.c,
+hwss/dce110, dcn10, dcn20, dcn30, dcn31, dcn32 hwseq, optc/dcn10, dcn30, dcn32, opp/dcn10,
+dcn20, mpc/dcn10, dcn20, dcn30, dcn32, dpp/dcn10, dcn30, dcn32, hubp/dcn10, dcn20, dcn21,
+dcn30, dcn32, hubbub/dcn10, dcn20, dcn30, dcn32, dccg/dcn32, link/link_dpms.c,
+link/hwss/link_hwss_dio.c, hwss/dc_hw_sequencer.c) in src/display/dcn32_stream.*; the DIO
+stream encoder, VPG and AFMT (dio/dcn10, dcn20, dcn30, dcn32 stream encoders, dcn30_vpg.c,
+dcn30_afmt.c) in src/display/dcn32_stream_encoder.*; info packets
+(modules/info_packet/info_packet.c, core/dc_resource.c) in src/display/hdmi_stream.*; and the
+register catalog src/display/dcn32_stream_registers.hpp generated from
+dcn_3_2_0_offset.h/dcn_3_2_0_sh_mask.h (Copyright 2022 Advanced Micro Devices, Inc.). The
+CEA/HDMI VIC tables and HDMI sink parsing in src/display/hdmi_stream.* adapt
+drivers/gpu/drm/drm_edid.c under its own MIT-style notice, reproduced in
+licenses/AMDGPU-OUTPUT.txt. Pinned copies with SHA-256: work/upstream-dcn-stream/SHA256SUMS.
+Rewritten in bounded C++17 (the DML port keeps Linux's names and arithmetic order).
+
+Additional Linux v6.12 adaptations, 2026-10-24 (DCN 3.2 restore and remaining Linux steps; same AMD
+MIT-style notice as above): dcn32_init_hw dccg_init/clock gating and dcn32_prepare_bandwidth
+(hwss/dcn32/dcn32_hwseq.c, dccg/dcn31/dcn31_dccg.c) in src/display/dcn32_stream.cpp,
+dc_dmub_srv_p_state_delegate (dc_dmub_srv.c, dmub/inc/dmub_cmd.h) in src/display/dcn32_dmub.* and
+src/output/display_link.*, link_set_dpms_off write_scdc_data (link/link_dpms.c,
+link/protocols/link_ddc.c) in src/output/hdmi_scdc.* and the GPU-reset restore order of
+amdgpu_dm/amdgpu_dm.c dm_suspend/dm_resume in src/reactos/dcn32_stream_native.cpp. Pinned copies
+with SHA-256: work/upstream-dcn-restore-modes/SHA256SUMS. Rewritten in bounded C++17; no source
+text is copied. src/display/edid_modes.* is an independent implementation of the VESA, CTA and
+DisplayID standards (see THIRD_PARTY.txt); drm_edid.c/drm_modes.c were behavioural references.
+
+Additional Linux v6.12 adaptations, 2026-10-25 (DCN 3.2 DSC, ODM combine, FEC and MPO; same AMD
+MIT-style notice as above): dc/dsc (dc_dsc.c, dcn20/dcn20_dsc.c, rc_calc.c, rc_calc_dpi.c),
+dc/dml/dsc (rc_calc_fpu.c, qp_tables.h), dc/basics/fixpt31_32.c in src/display/dcn32_dsc.*; the
+dcn32 resource/DML glue for ODM and MPO pipes in src/display/dcn32_topology.* and
+dcn32_bandwidth.*; link_dpms.c DSC steps, dcn32 hwseq/optc/mpc ODM and plane-update sequences in
+src/display/dcn32_stream.*; enc32/enc3 DSC/PPS functions in src/display/dcn32_stream_encoder.*;
+the dio link-encoder FEC functions and link_dp_phy.c/link_dp_training.c FEC steps in
+src/output/dcn32_link_encoder.*, dp_training.* and display_link.*. Pinned copies with SHA-256:
+work/upstream-dcn-dsc-odm/SHA256SUMS. Rewritten in bounded C++17; no source text is copied.
+
+The DSC picture parameter set packing and rate-control rules additionally follow
+drivers/gpu/drm/display/drm_dsc_helper.c and include/drm/display/drm_dsc.h:
+
+  SPDX-License-Identifier: MIT
+  Copyright (C) 2018 Intel Corp.
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+DPCD register addresses are taken from include/drm/display/drm_dp.h (Copyright 2008 Keith
+Packard; its permission notice is reproduced in licenses/AMDGPU-OUTPUT.txt).

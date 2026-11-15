@@ -1,0 +1,520 @@
+RX7900-ReactOS provenance, captured 2026-10-21
+
+Linux source baseline: torvalds/linux tag v6.12
+https://github.com/torvalds/linux/tree/v6.12
+
+Reused algorithm:
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_bios.c
+Original file SHA-256:
+7045741fb7f9291c0392fc2f0a63e461861c9a86fa6434508734348744be2dda
+Function: check_atom_bios
+Adaptation: src/common/atom_bios.cpp, validate_atom_bios
+Preserves the ROM signature, header-pointer location and ATOM/MOTA recognition.
+Uses checked C++ reads instead of Linux headers, logging and memcmp. In particular,
+the header pointer needs bytes 0x48 AND 0x49, and four signature bytes must be
+available after the header's four-byte prefix. Addition occurs in size_t rather
+than a 16-bit temporary. No firmware interpreter is ported. The separate native file loader accepts a fixed administrator-provided ROM file; it does not read or enable a physical PCI ROM.
+Copyright and permission notice: licenses/AMDGPU-BIOS.txt and the adapted source.
+
+Consulted, not copied into authored code:
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c
+Original file SHA-256:
+d7b7f43cfa4d4106baa80a8e3771b07ea56e0b10d6d63c1496077f88d342d9e4
+Its generic display-class IP-discovery matching is not proof of a particular SKU.
+The PCI filter accepts the Navi31 GPU functions 1002:7448/744A/744B/744C/745E
+(pci.ids names; the user's card is 1002:744C, corroborated against its read-only
+live PCI header). ASIC initialization still requires the exact IP-discovery
+versions, so a part whose IPs differ is refused there. It is not a full Linux
+AMDGPU PCI support table.
+
+ReactOS API/build baseline:
+https://github.com/reactos/reactos/commit/a97c8a2cdcf6a9a7f5cc543951a02ccb7a80d8ca
+Kernel entry and allocation: ntddk.h generated from sdk/include/xdk.
+Configuration reads: HAL HalGetBusDataByOffset, PCIConfiguration, segment zero.
+Build: set_module_type(kernelmodedriver), add_importlibs, add_cd_file.
+No ReactOS source implementation is copied into this package.
+
+Documentation conventions adapted from the user's Sonic-SNES project:
+ARCHITECTURE.md SHA-256 at read:
+92ff2321ffa48e8f57c5d735b32d97fea0289c9e340cd23512a1961758881a37
+STYLE_GUIDE.md SHA-256 at read:
+5c60b8f80bcb000d0adcda1d68163d002b44f0b9926ac9a0cdce798ba5d09f05
+No Sonic code, ROM, artwork or runtime component is reused or modified.
+
+Linux-derived SDMA acceleration command construction:
+src/acceleration/sdma.cpp and src/acceleration/sdma.hpp
+Permission notice: licenses/AMDGPU-SDMA.txt
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/sdma_v6_0.c
+SHA-256 75ed90d0057dca036aaf2eb3332755886af49f35977e49ce80b735b5e39c613f
+Functions: sdma_v6_0_emit_copy_buffer, sdma_v6_0_emit_fill_buffer,
+sdma_v6_0_ring_emit_fence; the 4 MiB copy/fill policy is retained.
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/sdma_v6_0_0_pkt_open.h
+SHA-256 d01f73f53b8bf9f287880f07b6287b4d9522494b0fa57fb33ea92c93a8623dbe
+Packet opcodes/layouts and UC fence memory type are reused with checked C++ writes.
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/gmc_v11_0.c
+SHA-256 cf80c3fc65560defb24e161bd6578f857475f98ad0855e623c8d78beeb583bf4
+Reference for the low-48-bit GPU address-space constraint.
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/amdgpu/amdgpu_discovery.c
+SHA-256 7e76881acf9b9165607acd59b338970cb7007862a3152e0c612a19d6e459e7c2
+Reference for routing SDMA 6.0.0 to sdma_v6_0_ip_block.
+https://docs.kernel.org/gpu/amdgpu/amd-hardware-list-info.html
+Primary product table associates RX 7900 XT/XTX with SDMA 6.0.0 and DCN 3.2.0.
+Encoding success is CPU-side packet construction, not submission or completion.
+
+Read-only physical-card evidence, collected on 2026-10-21:
+PCI address 0000:03:00.0, vendor/device 1002:744C, revision C8,
+subsystem 1DA2:471E, Linux driver amdgpu.
+Linux mem_info_vram_total: 25753026560 bytes (usable VRAM reported by the driver).
+Linux-exported ip_discovery/die/0/SDMA0/0: hw_id=42, version 6.0.0.
+Linux-exported ip_discovery/die/0/SDMA1/0: hw_id=43, version 6.0.0.
+Linux-exported ip_discovery/die/0/DMU/0: hw_id=271, version 3.2.0.
+Linux-exported ip_discovery/die/0/GC/0: hw_id=11, version 11.0.0.
+This does not implement runtime IP discovery inside ReactOS. The GPU was not
+unbound, reset, mapped through MMIO, or passed through to the test VM.
+
+Linux-derived display timing preparation:
+src/display/modes.cpp and src/display/modes.hpp
+Exact upstream notices, URLs, hashes and adaptation boundaries are retained in
+licenses/AMDGPU-DISPLAY.txt. Primary adapted sources are:
+drivers/gpu/drm/amd/display/dc/optc/dcn10/dcn10_optc.c
+SHA-256 ebd9f31f41e3cfc5bee363b0ebcf21774be5dfb79136366e94f1dbfecd0e10a8
+drivers/gpu/drm/amd/display/dc/optc/dcn32/dcn32_optc.c
+SHA-256 90fb755b0b4ea04a8dc4569af0ab8d7011d1f483874fde842c628043eff053b8
+drivers/gpu/drm/amd/include/asic_reg/dcn/dcn_3_2_0_sh_mask.h
+SHA-256 f8554c0061f1b413a293cc15b2ea83e4e905b93cb093280411c0db38744b7ab6
+Only checked timing validation, field construction and native VIDEO_MODE flag
+decoding are adapted. Transaction/rollback coordination and scanout-span checks
+are authored C++; they require a real backend and do not program hardware.
+Root review additionally validates the entire advertised allocation extent, not
+only the surface footprint. Tests use an invented scanout address rather than
+conflating the observed host PCI BAR with a GPU surface address.
+
+Linux-derived EDID sink discovery:
+src/output/sink.cpp and src/output/sink.hpp
+Exact upstream notices, URLs, hashes and adaptation boundaries are retained in
+licenses/AMDGPU-OUTPUT.txt. Linux v6.12 drm_edid.c and drm_edid.h supply header,
+checksum, detailed timing fields and CTA traversal logic, adapted to ByteView.
+The existing display ModeCatalog and Timing types are reused. This does not
+acquire EDID, enumerate connectors, train links or program a physical output.
+The user's connected monitor EDID was tested read-only without publishing its
+raw bytes or identity. Four detailed timing candidates were found in two blocks;
+transport capabilities are not inferred from those timings.
+
+Additional native bring-up components, 2026-10-21:
+Firmware layouts and file validation are adapted from Linux v6.12 AMDGPU common,
+SDMA2.0, PSP2.0 and DMCUB1.0 container definitions. Exact sources, hashes and
+notices are in licenses/AMDGPU-FIRMWARE.txt. Native NT file acquisition reuses
+the bounded filename/container contracts. Three private host firmware images
+passed the validator; their binaries are not redistributed, authenticated or
+uploaded to the GPU by this implementation.
+
+SDMA ring publication, completion/fault handling, IH6 event decoding, GFX11 PTEs,
+checksummed discovery and GFXHUB VMID0 programming reuse the Linux-derived
+contracts and preserve notices in licenses/AMDGPU-SDMA.txt. Test backends verify
+the protocols and failure quarantine, not physical DMA, interrupts or GPU work.
+The native VideoPort DMA pool uses assigned common buffers and bus addresses;
+its API/lifetime checks compile in the ReactOS build but lack physical testing.
+
+The DCN3.2 disabled-OTG backend and ATOM connector/HPD/DDC parsing retain the
+specific pinned register/table sources in licenses/AMDGPU-DISPLAY.txt and
+licenses/AMDGPU-OUTPUT.txt. They require actual initialization and physical link
+services before display output can work. The bounded OpenGL frontend and GFX11
+PM4 encoder reuse memory ownership and the shared byte writer; licenses/OPENGL.txt
+records their OpenGL/Linux register provenance. These are not a native WGL ICD,
+shader compiler or verified physical GFX queue.
+
+Separate QEMU-lightning AMD64 OpenGL integration reuses real Mesa WGL/Zink and
+the existing Lightning Venus Vulkan transport. Native Windows11 tests report
+the RX7900XTX through Zink and verify a GPU draw, depth, exact readback and swap.
+That Windows/WDDM result does not establish native ReactOS or Navi31-driver
+acceleration. Its package preserves its own Mesa/demos source and notices.
+
+Additional ROM and PSP bring-up work, 2026-10-21:
+The authored first-image PCIR validator checks bounded image framing and the
+assigned PCI vendor/device before exposing ATOM tables. It does not authenticate
+firmware, verify subsystem/board identity or enable the PCI ROM BAR. Linux v6.12
+drivers/pci/rom.c was consulted only to corroborate documented ROM framing
+offsets (PCIR pointer 0x18, length units 0x10); no implementation was copied.
+PSP13 mailbox sequencing and MP0 discovery identifiers preserve the exact AMD
+source notices and pins in licenses/AMDGPU-FIRMWARE.txt. The mailbox protocol
+is a tested CPU-side component; native trusted MC staging, hardware execution
+and secure OS authentication are not established by those tests.
+
+ReactOS NT5 Lightning integration, 2026-10-21:
+The unmodified third_party/qemu_lightning/transport.h comes from the existing
+QEMU-lightning source lightning/guest-vulkan/transport.h,
+with the original QEMU COPYING alongside it. Header SHA256:
+63bc68617635f216694e2de3eb64b1d74cbf4c1080dcbce66402420d25379dcc.
+The native C++ platform uses assigned ReactOS PCI resources, HAL configuration
+access, NT DMA and the existing QLV wire contract; it does not reuse WDDM entry
+points or establish physical Navi31 acceleration. Source provenance for Mesa,
+its NT5 compatibility adapters, the pinned Vulkan loader and Venus lives in
+the canonical QEMU-lightning lightning/opengl build/package metadata.
+The ReactOS PCI changes adapt the checkout's GPL PCI driver resource path;
+original copyrights remain in upstream files. CPU fault tests and a successful
+patched i386 guest boot establish only their stated probing behavior.
+The unmodified third_party/qemu_lightning/cursor_policy.hpp is the shared
+canonical lightning/display/cursor_policy.hpp, SHA256:
+298a76711692524b2663aa950bde9d56da41f03bfd395940fbfaae7c6dec35ff.
+It owns checked cursor geometry, exact representability, alpha conversion and
+clipped overlay placement with one explicit HiDPI/texture-orientation transform;
+the native adapter reuses it instead of duplicating host classification rules.
+reactos-cursor-recovery.patch preserves the upstream GDI pointer engine and
+adds minimal glue to a C++ helper. The engine reselects the original cursor
+bitmap after a positively identified live hardware failure; legacy VOID DDI
+and unrelated drivers retain their existing behavior. The exact installed
+822e864 release and the current SDK tree accept this checked patch. The recovery
+VM uses a Win32k built from its own installed release, never the newer SDK's OS
+binary. Its import set remains the original 274 imports.
+
+Physical Navi31 ASIC initialization, 2026-10-21:
+VRAM IP-discovery and PSP runtime-database reads, NBIO4.3/HDP6/MMHUB3.0 setup,
+the PSP13 KM ring (TOC/TMR/IP firmware/RLC autoload/ASD/RL), the GC11/SMU13/
+SDMA6/DCN3.2 PSP payload catalog, the SMU13.0.0 mailbox and power-play setup,
+ATOM firmwareinfo, PSP DRAM training, GMC11 GART/VM hubs, IH6, the GFX11 RLC/CP
+core, MES11, SDMA6 kernel rings, PSP trusted applications, VBIOS acquisition and
+the ordered sequencer adapt pinned Linux v6.12 amdgpu sources. The PCI capability
+layer (src/common/pci_caps.cpp, src/reactos/pci_config.cpp) reimplements Linux
+v6.12 drivers/pci algorithms (GPL-2.0-only) without copying source text; see
+licenses/LINUX-PCI.txt. Every URL, SHA-256, adapted
+function and omitted feature is listed in licenses/AMDGPU-FIRMWARE.txt; the
+pinned copies live in work/upstream-gpuinit with SHA256SUMS. Unit tests use a
+synthetic register/VRAM model and synthetic firmware headers. A private host
+check decoded the real gc_11_0_0, smu_13_0_0, sdma_6_0_0, dcn_3_2_0_dmcub and
+psp_13_0_0 sos/ta files; no AMD binary firmware is redistributed. No command was
+sent to the physical GPU, which stayed bound to Linux amdgpu.
+
+GDI raster and paired ReactOS integration, 2026-10-21:
+The unmodified canonical shared GDI header and protocol implement the 144-byte
+version2 raster descriptor, additive text groups and exact per-clip positive
+COLORONCOLOR endpoint mapping. Source/mask/tile bytes are owned snapshots, not
+caller addresses. Source hashes:
+lightning-gdi.h 6cc9232ae3380cf48b1e4ccf8383c77b7f86f30a5cdcdb0e405d6e0db1ba76d0
+gdi_protocol.hpp 2d501b9901739579465ca4109623101f4fda01fa0483084f60410ff42b86f70d
+gdi_protocol.cpp 652ef48422d1beb9826eaececad29d93ff60d43a36cb49be452f02fc1ad6b99c
+reactos-text-batch.patch and reactos-stretch-guard.patch add minimal optional
+upstream C glue calling project-owned C++ helpers. The stretch guard fits the
+ordinary 24-byte native COLORADJUSTMENT boundary, retaining kernel-only borrowed
+state synchronously. Unpaired engines and mirror requests decline before drawing
+for the original engine fallback. Glyph coverage follows the pinned ReactOS
+AlphaBltMask /256 integer semantics; console grouping closes only after its
+actual END fence, and failed final CPU uploads contain rather than publish a
+partial text group. The exact-release Win32k exports all 27 native display imports.
+No physical Radeon, MSVC2022 or ReactOS OpenGL acceleration claim follows.
+
+The real guest SCREEN-overlap oracle uses an independent immutable source.
+The pinned ReactOS DIB_XXBPP_StretchBlt in gdi/dib/stretchblt.c writes an
+aliased destination directly and can overwrite source samples used later;
+that in-place CPU corruption is not the GPU reference contract. Two actual
+GPU cases with nonzero source origins pass as part of 408 checks.
+
+GDI integration completion checkpoint, 2026-10-22:
+The actual 1920x1080 ReactOS i386 run passes 90 checks, including GPU glyph,
+mask, tile, Boolean raster and positive/clipped/overlapping stretch pixels.
+GPU mirrors retain exact engine fallback. The source-pinned brush-origin patch
+uses current locked DC attributes with checked 64-bit translation, and routes
+generated 8/16/32-bit DIB pattern phases through one positive-remainder helper.
+This corrects both ignored SetBrushOrgEx state and negative pattern indices.
+The helper fixture passes 355 checks each under GCC13 i386/AMD64 plus Wine;
+the 24-byte paired stretch guard passes 19 on both. The GPU fixture passes 408.
+The installer package contains the current display/miniport code and checked
+optional kernel patches; exact-release kernel compilation remains required.
+Scene mean 16.193ms, p95 17.357ms and max 98.381ms do not establish smooth 60Hz.
+
+GDI transfer and kernel-stack correction, 2026-10-22:
+The canonical C++ backend packs DWORD-aligned immutable slices into the existing
+three upload PBOs. Each whole store rewinds only after actual completion of its
+latest ticket; allocation quotas, BUSY and LOST ownership remain unchanged.
+The actual GPU fixture passes415 checks. The shared decoder now uses the caller's
+exclusive output instead of a1264-byte temporary, preserving complete zero output
+on all malformed input. Protocol ASan/UBSan passes1654 checks and GCC13 i386/AMD64
+compile/link pass. i386 decoder frame measured1488->224 bytes. Native submission
+uses serialized device-owned command and candidate storage, frame2712->336 bytes
+with the exact SDK flags; these are function frames, not total callback depth.
+A GNU native512-byte frame warning is enforced. Optional coherence-only native
+queries keep live capability/reset and six ledger reads,8 vs15 active MMIO reads;
+full statistics retain real publication receipts. Native query/client/cursor
+fixtures pass14/61/25 under GCC13 i386 and Wine. Valid checked coverage8 glyphs
+copy directly into owned staging, with existing engine normalization for other
+layouts. MSVC remains untested. Guest performance evidence is recorded separately.
+
+The corrected visible-first Lightning recovery VM passes all90 actual checks at
+1920x1080, including cursor/mode recovery. Scene mean14.481ms, p95 20.986ms,
+max69.785ms; transitions1386.639ms, text mean6.6204ms. Five synchronized CPU
+fallbacks remain; no quarantine/cursor failure/upload-staging BUSY/GL error was
+observed. Prior means16.193ms scene and7.567ms text are separate-run observations,
+not a controlled performance claim. Tail latency and full-viewport GTK swaps
+remain. A hidden-console diagnostic had nine cursor failures and software cursor
+redraw; creating Lightning first restores actual UI acknowledgement while both
+adapters retain their PCI addresses and BARs. The full visible mode-cycle run
+also verifies the corrected stack path after an earlier0x7f double fault. Native
+submission and decoder frames total560 bytes, excluding all other callees and OS
+callbacks; there is no whole-kernel memory-safety proof.
+
+GDI primary-screen coverage and completion, 2026-10-22:
+The C++ cosmetic-line mask follows ReactOS win32ss/gdi/eng/lineto.c integer
+half-error/endpoint semantics; analytic clipping bounds work for extreme signed
+endpoints without iterating the offscreen distance. Source license GPL-2.0-or-later.
+The existing mask compositor performs brush/ROP color drawing. Gradient shaders
+follow the pinned822e864 win32ss/gdi/eng/gradient.c ordered integer/color behavior,
+including original16-bit equality and signed intermediate byte wrapping. GPU
+interpolation is checked against an independent iterative fixture and actual GDI
+DIB output. The optional kernel patch clips solid gradient spans and calls a C++
+checked-byte-count helper before allocation/capture; authored implementation is C++.
+Public DrvRealizeBrush owns optional mask bytes; Paint uses no EBRUSHOBJ cast.
+GdiFlush's pinned SynchronizeDriver stub optionally calls the C++ active-primary
+synchronizer. A referenced PDEV and device-mode lock outlive the driver callback;
+completion observes its real GPU fence, not a monitor vblank. Short polling is
+bounded to200us before the existing yielding/deadline policy. No physical GPU
+initialization, reset, rebinding or firmware operation is performed by these paths.
+Actual GPU fixture593; protocol/controller/runtime1731/249/142. Portable line
+coverage649 under host ASan/UBSan (GCC15; LSan disabled under ptrace), and GCC13
+i386/AMD64 plus Wine. Native and exact-release kernel build; final guest checkpoint
+is being recorded separately. Memory-DC GPU resources, clips beyond64rectangles,
+masked stretching, styled/patterned lines and other stretch modes remain missing.
+
+Paired region Paint correction, 2026-10-22:
+The optional brush-origin patch extends the existing ReactOS IntGdiFillRgn
+boundary: authoritative DC attributes plus checked surface origin, existing
+EBRUSHOBJ_vInitFromDC and balanced EBRUSHOBJ_vCleanup. Implementation remains in
+C++ helpers or existing ReactOS APIs; the C changes are conditional call glue.
+DrvRealizeBrush retains the public mask and inverts meaningful stock hatch bits
+(gaulHatchBrushes use0-bit ink); arbitrary masks and padding retain their bytes.
+The brush fixture passes20; nativeclient113. Active host completion polling is
+100us while work is pending; idle timers and absolute publication cadence remain
+unchanged. The paired VM run, rather than compiler/test counts, establishes actual
+pixel behavior and completion latency.
+
+Final paired GDI runtime checkpoint, 2026-10-22:
+Actual ReactOS i3861920x1080 passes143checks,1 synchronized CPU fallback, accepted/
+completed10078, published19:1:10078, zero GL error or upload-staging BUSY. Native
+113/query20/brush20/guard34 fixtures pass. Scene mean41.080ms/p9553.191ms and
+text17.1224ms leave latency unresolved. Real GdiFlush execution barriers differ
+from previous submission-only timings; no smooth60Hz or speedup claim is made.
+The visible recovery VM remains running; the original development disk and Linux
+GPU binding are preserved. Current driver DLL512d6ed80bb31ba4d4aad9113d195cacd64a9aea8ca92cbccbacde7369bbdefa;
+current exact-release Win32k2568a2502405c619c61f52efa1cf76eedccfb5036e6d956f5dd47be2928406fd.
+
+Physical DCN3.2 hardware cursor, 2026-10-22 (src/display/dcn32_cursor.*,
+src/reactos/radeon_cursor_*): adapted, no verbatim copy, from Linux v6.12 AMD display
+code under the AMD MIT-style permission notice (licenses/AMDGPU-DISPLAY.txt). Files
+fetched read-only from torvalds/linux tag v6.12, SHA-256:
+  86ee158fcaceb025a0bdfb715efcfc6a5421ff4e342d963863a93ab5bf249516  dcn32_hubp.c
+  9671025823f63ba040274f9a2d455463340e26b67233c755f1116a58d97a64d3  dcn20_hubp.c
+  dc20f1df04ad2d73e6bf8c402fa26ff1e0b47bcde04eea83811c5f50c19fa7f1  dcn10_hubp.c
+  f82bed488be75311117b08babdccd1bb2e09f85d36aa2c8e88c1b27aa53c12b7  hubp.h
+  7b27b1c37f2144a8e6fa45edb17c277ab5320fcfed3e931b784bacb7956b4b7a  dcn30_dpp.c
+  1bde594401cca985faf428d3e52eb05edf93b70928608a73237dc44a182a3d9e  dcn10_dpp.c
+  8279ea38008895611f88e159de6e0fe6988430c9cc6f60757b23be3430e681d1  dcn32_dpp.c
+  42b0ca46e72aff5be5612ae196bebb0c922fcb9f8209ddebe1f8dc0c51d986e1  dcn10_hwseq.c
+  ecd07fd6d1c6bed2784c3d00ca6d64bd19aec47273fc7c7eb5413e779c1a3a99  dcn32_init.c
+  f3e8d4223dd6fb6a3ee16f48e689769f6c4e00d87c9b3e17ec94347e47e2157c  dc_stream.c
+  08bdee671f6bf52d52d8cb90ed90542938bbc6677107cf6c8ea86539b6c14fce  dc_hw_types.h
+  42a107ed6f5086298344b84a5ad3dd227dc35c6b9ac06f93942ed70d11d92deb  dcn32_resource.c
+  e62ad58b215eb2e98b27cc062140293a7c66894e9aa51faafe7596e916916aee  amdgpu_dm_plane.c
+  402bf2e371a6503c091f79867e1464ef71ef980e92c6c348b42718ee624cfbde  dcn20_hubbub.c
+  c86e156181bffab2f2c9c938f7e70d20e809a8d883b7d6450e7ed37142d6fdbe  dcn32_dccg.c
+  9acf663d2296b74f3e4f444e7589f1fde376ea4a3966265c2b657d016bd20904  bios_parser2.c
+Pinned local inputs: dcn_3_2_0_offset.h, dcn_3_2_0_sh_mask.h, dcn10_mpc.c, amdgpu_dm.c,
+atomfirmware.h (work/upstream-gpuinit). ReactOS win32ss/gdi/eng/mouse.c (a97c8a2c) was
+read for the engine contract only; nothing adapted. Host-tested only.
+
+VBE linear-mode fallback, 2026-10-22 (src/display/vbe.*, src/reactos/vbe_modeset.*):
+original code from the VESA BIOS Extension 2.0/3.0 structure definitions; ReactOS
+videoprt int10.c/services.c and vbemp.c (GPL) were read for interface behaviour only,
+nothing copied. Host-tested only.
+
+GFX11 compute raster, 2026-10-22 (src/hardware/gfx11_isa.*, raster2d_shaders.*, raster2d.*,
+tests/gfx11_interp.hpp): original encoder and kernels. Encodings are checked against LLVM
+18.1.8 GFX11 MC test vectors (Apache-2.0 WITH LLVM-exception), pinned under
+work/upstream-gpuinit/llvm-mc-gfx11/ with SHA-256 in work/upstream-gpuinit/SHA256SUMS; test
+data only, not shipped. Compute register values follow Mesa radv GFX11 (MIT). GDI semantics
+(dib/dib.c, dib32bpp.c, stretchblt.c, eng/bitblt.c, gradient.c, lineto.c of ReactOS
+a97c8a2, GPL) were reproduced as behaviour references only; no code copied. Host-tested only.
+
+Offscreen surfaces and clip batching, 2026-10-22 (radeon_display.*, radeon_2d_*): original
+code; ReactOS win32ss clip.c and ntgdi/bitmaps.c read for the engine contract only.
+
+GDI engine reference ports, 2026-10-22 (tests/gdi_engine_reference.hpp): test-only direct
+ports of ReactOS a97c8a2 win32ss/gdi/eng/stretchblt.c (IntEngStretchBlt, EngStretchBltROP,
+CallDibStretchBlt), dib DIB_XXBPP_StretchBlt, eng/engmisc.c IntEngEnter/Leave and
+eng/lineto.c EngLineTo; extended 2026-10-23 with eng/xlateobj.c XLATEOBJ_iXlate functions (Table,
+RGBtoBGR, ShiftAndMask, 555/565 expansion), DIB_8/16/24BPP_GetPixel and the styled HandleStyles
++ octant loops of eng/lineto.c. GPL-2.0-or-later like their origin; used only as test oracles and
+never linked into shipped binaries. Shipped radeondisp/raster code reproduces behaviour only.
+
+ATOM bytecode interpreter, 2026-10-24 (src/hardware/atom_interpreter.*): C++17 port of Linux v6.12
+drivers/gpu/drm/amd/amdgpu/atom.c, atom.h, atom-bits.h, atom-names.h and atom-types.h (Advanced
+Micro Devices / ATI, MIT-style permission notice; see licenses/AMDGPU-FIRMWARE.txt). Upstream copies
+pinned read-only in work/upstream-gpuinit with SHA-256 in its SHA256SUMS. Used by AsicInit::repost
+to execute the VBIOS ASIC_Init table as amdgpu_atomfirmware_asic_init does. Host-tested only.
+
+DCN 3.2 display link owner, 2026-10-24 (src/output/dcn32_route.*, dcn32_link_encoder.*,
+hdmi_scdc.*, display_link.*, src/display/dcn32_clocks.*, dcn32_dmub.*,
+src/reactos/display_link_native.*): C++17 adaptation (no verbatim copy) of Linux v6.12 AMD
+display code, MIT-style AMD notice (licenses/AMDGPU-OUTPUT.txt, licenses/AMDGPU-DISPLAY.txt):
+link/link_factory.c, bios/bios_parser2.c, bios/command_table2.c,
+bios/dce112/command_table_helper2_dce112.c, gpio/dcn32/hw_translate_dcn32.c,
+gpio/dcn32/hw_factory_dcn32.c, gpio/hw_gpio.c, gpio/hw_ddc.c, gpio/ddc_regs.h,
+dio/dcn32/dcn32_dio_link_encoder.c, dio/dcn10/dcn10_link_encoder.c, dce/dce_i2c_hw.c/.h,
+dce/dce_clock_source.c, link/protocols/link_ddc.c, core/dc_resource.c,
+clk_mgr/dcn32/dcn32_clk_mgr.c, dcn32_clk_mgr_smu_msg.c, dalsmc.h, inc/hw/clk_mgr_internal.h,
+dccg/dcn20/dcn20_dccg.c, dccg/dcn32/dcn32_dccg.c, dmub/src/dmub_srv.c, dmub/src/dmub_dcn32.c,
+dmub/inc/dmub_cmd.h, resource/dcn32/dcn32_resource.c. Register offsets/masks are the pinned
+dcn_3_2_0_offset.h/_sh_mask.h copies (Binaries/.build/output-agent/upstream, work/upstream-display);
+SMU13 clock ids from work/upstream-gpuinit/smu13_driver_if_v13_0_0.h; ATOM layouts from the pinned
+atomfirmware.h/ObjectID.h. The remaining v6.12 files were read at
+https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/amd/display/ (no local copy
+stored). Host/Wine-tested against synthetic models only; nothing has run on the card.
+
+DCN 3.2 display stream owner, 2026-10-24 (src/display/dcn32_bandwidth.*, dcn32_dml*.*,
+hdmi_stream.*, dcn32_stream_registers.hpp, dcn32_stream_encoder.*, dcn32_stream.*,
+src/reactos/dcn32_stream_native.*; tests/dcn32_stream_reference.hpp): C++17 adaptation of
+Linux v6.12 AMD display code (DML32 core and dcn32 glue, dc.c/dc_resource.c commit sequence,
+dce110/dcn10/20/30/31/32 hardware sequencers, OPTC, OPP, MPC, DPP, HUBP, HUBBUB, DCCG, DIO
+stream encoders, VPG, AFMT, link_dpms.c, link_hwss_dio.c, info_packet.c) under the AMD MIT-style
+notice (licenses/AMDGPU-DISPLAY.txt), and of drivers/gpu/drm/drm_edid.c (CEA/HDMI VIC data,
+CTA data-block parsing) under its MIT-style notice (licenses/AMDGPU-OUTPUT.txt). The DML port
+keeps Linux's identifiers and arithmetic order so its output can be compared value for value with
+the unmodified Linux DML32 compiled as a scratch oracle; no other source text is copied. Pinned
+read-only copies with SHA-256 in work/upstream-dcn-stream/SHA256SUMS. Host/Wine-tested against
+synthetic models and the oracle only; nothing has run on the card.
+
+Kernel gfx-ring graphics jobs and thermal/RAS interrupt actions, 2026-10-24
+(src/hardware/gfx11_queues.* VM jobs, src/hardware/gpu_health.*, src/hardware/smu13.* thermal
+actions, src/reactos/gpu_health_native.*, src/reactos/process_graphics.* kernel-ring route): C++17
+adaptation (no verbatim copy) of Linux v6.12 drivers/gpu/drm/amd/amdgpu gfx_v11_0.c
+(ring_emit_vm_flush, emit_pipeline_sync, emit_cntxcntl, emit_frame_cntl, emit_wreg,
+emit_reg_wait, emit_reg_write_reg_wait, wait_reg_mem, ring_emit_ib_gfx, ring funcs,
+check_fw_cp_gfx_shadow), amdgpu_ib.c (amdgpu_ib_schedule with a job), amdgpu_vm.c
+(amdgpu_vm_flush, amdgpu_vm_need_pipeline_sync), amdgpu_ids.c (amdgpu_vmid_grab, grab_idle,
+grab_used), amdgpu_gmc.c (amdgpu_gmc_allocate_vm_inv_eng), smu_v13_0.c (smu_v13_0_irq_process,
+ack_ac_dc_interrupt, thermal alert fields), amdgpu_smu.c (smu_swctf_delayed_work_handler,
+throttling logging work), smu_v13_0_0_ppt.c (get_thermal_temperature_range, metrics temperatures,
+smu_v13_0_get_throttler_status), amdgpu.h, amdgpu_smu.h, smu_cmn.h, amdgpu_irq.c, amdgpu_ras.c
+(amdgpu_ras_interrupt_fatal_error_handler, amdgpu_ras_global_ras_isr, nbio ras selection),
+amdgpu_ras.h, nbio_v4_3.c and nbio_4_3_0 offset/sh_mask, gmc_v11_0.c (ecc_irq), umc_v8_10.c, all
+pinned in work/upstream-gpuinit (SHA256SUMS); MIT-style AMD notice, licenses/AMDGPU-FIRMWARE.txt.
+SmuMetrics_t/PPTable_t offsets measured by compiling the pinned smu13_driver_if_v13_0_0.h.
+ReactOS a97c8a2/822e864 videoprt, ntoskrnl io/iomgr/irq.c and drivers/bus/pci were read
+(not copied) for the line-interrupt limit. Host/Wine-tested only; nothing has run on the card.
+
+UMC 8.10 ECC error records, 2026-10-24 (src/hardware/umc_v8_10.*, the UMC part of
+src/hardware/gpu_health.*, discovery_harvest/discovery_mall_half_use in src/hardware/discovery.*):
+C++17 adaptation (no verbatim copy; all sources MIT) of Linux v6.12 umc_v8_10.c/.h (channel
+tables, umc_v8_10_swizzle_mode_na_to_pa, convert_error_address, query_ras_error_count/address,
+clear_error_count, err_cnt_init), umc_8_10_0_offset.h/_sh_mask.h register values, amdgpu_umc.c/.h
+(handle_bad_pages direct query, do_page_retirement, process_ecc_irq, fill_error_record,
+loop_channels), amdgpu_ras.c (add_bad_pages, validate_threshold, interrupt_umc_handler,
+poison handlers), amdgpu_ras_eeprom.c (threshold warning), gmc_v11_0.c (set_umc_funcs),
+amdgpu_discovery.c (UMC count, harvest table), amdgpu_device.c (indirect_rreg64/wreg64) and
+smu_v13_0_0_ppt.c (no ECC table on MP1 13.0.0). Pinned in work/upstream-gpuinit, downloaded
+2026-10-24 from git.kernel.org torvalds/linux.git plain/...?h=v6.12 (SHA-256 in its SHA256SUMS):
+umc_8_10_0_offset.h 99230630311455b08544c322766cb8adc1b543d9bfdf5c71cbf2e87ab257acc1
+umc_8_10_0_sh_mask.h fa2447735cd233adc47caae6cf156727b27da73eb1ca7bcac706d24c0f9af022
+umc_v8_10.h 7f3972173f3f6a43231707140c8deb35f95ccfb56e2944f17dce8bbe2c19e8f8
+umc_v8_10.c 2673e93339a18d255f0b25161ba449e37835cfc1888ffacefdf57a1a033b4333 (already pinned)
+amdgpu_umc.c c38c5a196573ec07da0a4409a7f5fe96657698666c6bf72f9acb8390bf3b6344
+amdgpu_umc.h 2df9f9d435b5f0acf37fa6d92d75d6538a98be9160ece7e798311bc51b27e169
+amdgpu_ras_eeprom.c ae033cef1a52207a306386bbc4ace455b4259fa010a6a7ec9aab70f3ec165de8
+Register values are transcribed as named constants (the project does not vendor register
+headers); notice in licenses/AMDGPU-FIRMWARE.txt. Test address vectors came from compiling the
+pinned conversion functions unchanged in a scratch harness outside this tree. Host/Wine-tested
+only; nothing has run on the card.
+
+DCN 3.2 display restore, EDID modes and remaining Linux steps, 2026-10-24 (src/display/edid_modes.*,
+the VIC-list additions of src/display/hdmi_stream.*, dcn32_stream.cpp takeover/prepare_bandwidth/
+link_set_dpms_off, dcn32_stream_registers.hpp gating namespaces, dcn32_dmub.* FAMS command,
+src/output/display_link.* p_state_delegate/hdmi_scdc_legacy, src/output/hdmi_scdc.* legacy write,
+src/reactos/dcn32_aux_native.* re-arm, src/reactos/dcn32_stream_native.* restore and mode list;
+tests/edid_modes_tests.cpp, tests/dcn32_stream_reference.hpp): C++17 adaptation (no verbatim copy)
+of Linux v6.12 AMD display code under the AMD MIT-style notice (licenses/AMDGPU-DISPLAY.txt):
+hwss/dcn32/dcn32_hwseq.c (dcn32_init_hw dccg_init and DCN clock gating, dcn32_prepare_bandwidth),
+dccg/dcn31/dcn31_dccg.c (dccg31_init, dccg31_disable_symclk32_se), dc_dmub_srv.c
+(dc_dmub_srv_p_state_delegate, dc_dmub_srv_cmd_run_list, dc_dmub_srv_wait_for_idle),
+dmub/inc/dmub_cmd.h (dmub_rb_cmd_fw_assisted_mclk_switch), link/link_dpms.c (link_set_dpms_off
+write_scdc_data), link/protocols/link_ddc.c, link/link_detection.c and amdgpu_dm/amdgpu_dm.c
+(dm_suspend/dm_resume GPU-reset path) as the sequence reference. EDID decoding beyond detailed
+timings is this project's own implementation of VESA E-EDID 1.4, VESA DMT 1.0 rev 13, VESA CVT
+1.2, CTA-861-G, HDMI 1.4b and VESA DisplayID 1.3/2.0; drivers/gpu/drm/drm_edid.c and
+drm_modes.c (MIT-style notices, licenses/AMDGPU-OUTPUT.txt) were read as the behavioural
+reference only. The DMT timing values are transcribed facts from the pinned drm_edid.c
+drm_dmt_modes data (DMT 0x52 sync polarity corrected to the DMT/CTA +H +V); the CEA/HDMI VIC data
+are hdmi_stream's existing tables. Downloaded 2026-10-24 from git.kernel.org torvalds/linux.git
+plain/...?h=v6.12 into work/upstream-dcn-restore-modes (SHA-256 also in its SHA256SUMS):
+drivers/gpu/drm/amd/display/dc/dccg/dcn31/dcn31_dccg.c 4ba2ff29376f408c355deaf62e4e32921e6c794b7fc3aec7a2b7dcda7bc635e9
+drivers/gpu/drm/amd/display/dc/dccg/dcn20/dcn20_dccg.c e4a840c109ae9d00f796de6c13610cffe97c61c4b1c025cc02d686fef815753e
+drivers/gpu/drm/amd/display/dc/dc_dmub_srv.c 13d2d593c8671173ccde887ed8dc4348f91f1d34776ee48a86c27c0a1fafa38c
+drivers/gpu/drm/amd/display/dmub/inc/dmub_cmd.h 56738e3e6c53a75d0c29ddadaf64bf746a1c3c20890e9c02f528d2c2034d85dd
+drivers/gpu/drm/amd/display/dc/link/link_detection.c b28962c8912ef14a84ad31924a2f294da2f33115b592228a999ee49539e084ef
+drivers/gpu/drm/amd/display/dc/link/protocols/link_ddc.c 19ab7d8769dd7190ac930e17049b8296d07fbdc3483396bd4631e89bc4a4a390
+drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c 2aa45d1a23a97724807a5a6828c8057d550131c82cea9cbd3792dcf7038f97c6
+drivers/gpu/drm/drm_modes.c bbd8079eebc846aefb3c9f54f47d1162f96f85d1f2413ab4aca596b4fb8b9d97
+dcn32_hwseq.c, dcn20_hwseq.c, link_dpms.c, dcn32_resource.c, dcn32_dccg.c/.h, dcn_3_2_0 headers and
+drm_edid.c are the existing work/upstream-dcn-stream pins. Host/Wine-tested against synthetic
+models only; nothing has run on the card.
+
+DCN 3.2 DSC, ODM combine, FEC and MPO, 2026-10-25 (src/display/dcn32_dsc.*, src/display/dcn32_topology.*,
+the multi-pipe parts of src/display/dcn32_bandwidth.* and dcn32_dml*.*, the ODM/DSC/MPO parts of
+src/display/dcn32_stream.*, the DSC/PPS functions of src/display/dcn32_stream_encoder.*, the FEC
+functions of src/output/dcn32_link_encoder.*, src/output/dp_training.* and src/output/display_link.*,
+the DSC/ODM/overlay parts of src/reactos/dcn32_stream_native.*; tests/dcn32_dsc_tests.cpp and the
+multi-pipe parts of tests/dcn32_stream_reference.hpp): C++17 adaptation (no verbatim copy) of Linux
+v6.12 AMD display code under the AMD MIT-style notice (licenses/AMDGPU-DISPLAY.txt): dc/dsc/dc_dsc.c
+(dc_dsc_parse_dsc_dpcd, dc_dsc_compute_config/setup_dsc_config, dc_dsc_stream_bandwidth_in_kbps),
+dc/dsc/dcn20/dcn20_dsc.c (dsc2_get_enc_caps, dsc_prepare_config, dsc_write_to_registers,
+dsc2_enable/disable/disconnect/read_state/wait_disconnect_pending_clear), dc/dsc/rc_calc.c,
+dc/dsc/rc_calc_dpi.c, dc/dml/dsc/rc_calc_fpu.c with the qp_tables.h 444 8 bpc rows (transcribed
+data), dc/basics/fixpt31_32.c; dc/link/link_dpms.c (link_set_dsc_on_stream, link_set_dsc_enable,
+link_set_dsc_pps_packet, dp_set_dsc_on_rx), dc/link/protocols/link_dp_phy.c and
+link_dp_training.c (dp_set_fec_ready, dp_set_fec_enable), dc/link/link_validation.c, the dio
+dcn10/20/31/32 link encoders (enc2_fec_set_ready/enable/is_active), amdgpu_dm/amdgpu_dm.c
+(apply_dsc_policy_for_stream, plane zpos order) and amdgpu_dm_helpers.c
+(dm_helpers_dp_write_dsc_enable); the dcn32 pipe split/merge, ODM power policy, DET override,
+free-pipe and ODM/MPC slice code of resource/dcn32/dcn32_resource.c, dcn32_resource_helpers.c,
+dml/dcn32/dcn32_fpu.c, dml/dcn20/dcn20_fpu.c and core/dc_resource.c, and the ODM/MPO commit and
+plane-update sequences of core/dc.c, hwss/dcn20, dcn32 hwseq, optc/dcn32, mpc/dcn10, dcn20 (the
+existing work/upstream-dcn-stream pins). The PPS packing and the DSC rate-control parameter rules
+follow drivers/gpu/drm/display/drm_dsc_helper.c and include/drm/display/drm_dsc.h (Intel, MIT;
+notice in licenses/AMDGPU-DISPLAY.txt) and the VESA DSC 1.2a picture parameter set layout; DPCD
+addresses are from include/drm/display/drm_dp.h. Downloaded 2026-10-24/25 from git.kernel.org
+torvalds/linux.git plain/...?h=v6.12 into work/upstream-dcn-dsc-odm (SHA-256 also in its
+SHA256SUMS; dc_hw_types.h and the dcn_3_2_0 headers are the work/upstream-dcn-stream pins):
+drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c 2aa45d1a23a97724807a5a6828c8057d550131c82cea9cbd3792dcf7038f97c6
+drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_helpers.c dc6242a54e498d3f6e02bcf8787ce6e8e890dc189ac6fe0fb16312a5071afb2b
+drivers/gpu/drm/amd/display/dc/dsc/dc_dsc.c c898e0b7cbd6b91af001dcbc59353af197b7a0bc9c2e14be5e2af9c24e43a0a1
+drivers/gpu/drm/amd/display/dc/dc_dsc.h c279d9a8f02e89e9c48ea3eb333367f891a9855d16a864963106d935e0ba034c
+drivers/gpu/drm/amd/display/dc/dio/dcn10/dcn10_link_encoder.c e07190be67a76596d0c90510ad2329234c5486fc3924f986bbf800946b7f0323
+drivers/gpu/drm/amd/display/dc/dio/dcn10/dcn10_link_encoder.h 17503e0199a3e2dd954e8c512ad366f9bdcfa9446354038159ae4b5cd4323a9f
+drivers/gpu/drm/amd/display/dc/dsc/dcn20/dcn20_dsc.c fda50197e9d39c3ed2985930fdd0de56acd77296a87bd3e7e347223b127d5143
+drivers/gpu/drm/amd/display/dc/dsc/dcn20/dcn20_dsc.h 76fa9c739554aa04b081abe3cbc6d53cf128e2b0be18881f8f76c4bd31844639
+drivers/gpu/drm/amd/display/dc/dio/dcn20/dcn20_link_encoder.c 4d33c2b272fac23be540163bc41033f0e4fcaabedea81f948a7c58443d6ffbb9
+drivers/gpu/drm/amd/display/dc/dio/dcn20/dcn20_link_encoder.h f21e6208696827d3e1792f266e03eae85ad8b157987b5cedd70e5ee7ed818051
+drivers/gpu/drm/amd/display/dc/dio/dcn31/dcn31_dio_link_encoder.c 25c07d919615025221223b2dd946ab3ba3fa2df8352528694929b9f00519dbf0
+drivers/gpu/drm/amd/display/dc/dio/dcn31/dcn31_dio_link_encoder.h b43328bab393986298a76f9a533259dd515d055116503766960a3c19c57e1082
+drivers/gpu/drm/amd/display/dc/dio/dcn32/dcn32_dio_link_encoder.c 2a7eab05e7be02321ba792760cc89cc7885064ba1cecaa252e3f2bb73087466b
+drivers/gpu/drm/amd/display/dc/dio/dcn32/dcn32_dio_link_encoder.h 871b7a5edcc408b25cac307c1857687618d5aa893cf2590a4384f01ba762dfac
+include/drm/display/drm_dp.h 70ea7e2c08c2155450f998d30d53e147070443168f616f06584b671e2b37dfd2
+include/drm/display/drm_dsc.h f57cf45be321cdf4def25491ef54e2adfef9627c18cebc53bd9e2acd0fd2a394
+drivers/gpu/drm/display/drm_dsc_helper.c 66a2b562e94231a22a48bdfd3ceef75092f50976618939eb05aab2272a2ff088
+drivers/gpu/drm/amd/display/dc/dsc/dsc.h 2d763c06972b22016a5287383f7d6895a729749958eaebe51508a08a61213e1e
+drivers/gpu/drm/amd/display/dc/dsc/dscc_types.h d77fcbe8fcb42050597314597e96ffba71569dba9d335105414936f8e1f05d96
+drivers/gpu/drm/amd/display/include/fixed31_32.h fc58537536cf20ec82e3cc041892b567affcf1224979f62919277bea36aceefe
+drivers/gpu/drm/amd/display/dc/basics/fixpt31_32.c d6ad284ebad2eafc6fadc7b22f03497d22626dd73dd756c53eca2bc29e9a4124
+drivers/gpu/drm/amd/display/dc/inc/link.h 73a872c93fa1e9fce827f26dd20bfcb81b555b44b179e94b9c19aa6ac8168807
+drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_capability.c c0f46a304ad135af3c7cfeccc118859e5bd3329fd7c0711d181a141a47ae96fd
+drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_phy.c 8a4aedae6082b6bbfcc3098305cf136542d4d5029716a1bd3c82ff6d8b5acfdf
+drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_training.c f559f7781e70efb9409f13c71cc0366237b0c4470a7c3271461b5c2db0b737b0
+drivers/gpu/drm/amd/display/include/link_service_types.h 4f3a26c28a18d255620270048d5d33e1356be5a78a5292a46df85b4efa82b728
+drivers/gpu/drm/amd/display/dc/link/link_validation.c 27bc991731b29a65db314e33466fc2eb713f870dddd6e74d85fe597cd2291c16
+drivers/gpu/drm/amd/display/dc/dml/dsc/qp_tables.h 8cb5b232900d9ecc746db8dc8d718243f11549ae9c688618c88c3791c7c43e04
+drivers/gpu/drm/amd/display/dc/dsc/rc_calc.c 2614cca71b1cc7d0aabaafcb71d01ce3b1b53ce442bb34ffb3ba4865eaacca60
+drivers/gpu/drm/amd/display/dc/dsc/rc_calc.h 272382ed437ef1c9d10bb79968d248afc5861c07be70be43dd0a8eb752fc0117
+drivers/gpu/drm/amd/display/dc/dsc/rc_calc_dpi.c c267dd6b83aca0c49031705fc7ee9c50e7e7731e5f2ae4f275a56b27b9e63b55
+drivers/gpu/drm/amd/display/dc/dml/dsc/rc_calc_fpu.c 07f084da77a784ccfa3e2911ccd78489c84393ad63a17d128c55302992875413
+drivers/gpu/drm/amd/display/dc/dml/dsc/rc_calc_fpu.h 68f6f8c5f17d6a9564ba08fa7fb3e5f21fa958cf2afd38e7bd1ebd030c3bf84f
+drivers/gpu/drm/amd/display/dc/inc/reg_helper.h 3d4a2cfdbaa61dccc3cfe417a5109796c989623ed49e87572b58d6c392ee88b9
+drivers/gpu/drm/amd/display/include/signal_types.h d1afe40e01f01b6a919898826dfa5aaa8e60199f1f2c83ef15cc633342503b99
+The DSC/DML golden vectors in tests were produced by compiling these pinned sources unchanged in
+scratch oracles outside this tree. Host/Wine-tested against synthetic models only; nothing has run
+on the card.

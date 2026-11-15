@@ -1,0 +1,184 @@
+--- a/win32ss/CMakeLists.txt
++++ b/win32ss/CMakeLists.txt
+@@ -263,6 +263,24 @@
+ endif()
+ target_link_libraries(win32k ${PSEH_LIB} dxguid libcntpr)
+ 
++# Optional paired stretch admission preserves engine mirror orientation.
++option(RX7900_FRAMEBUFFER_STRETCH_GUARD "Preserve Lightning stretch orientation" OFF)
++set(RX7900_FRAMEBUFFER_STRETCH_GUARD_SOURCE "" CACHE PATH "RX7900 native C++ source directory")
++if(RX7900_FRAMEBUFFER_STRETCH_GUARD)
++    get_filename_component(rx7900_stretch_shared
++        "${RX7900_FRAMEBUFFER_STRETCH_GUARD_SOURCE}/../../third_party/qemu_lightning" ABSOLUTE)
++    if(NOT EXISTS "${RX7900_FRAMEBUFFER_STRETCH_GUARD_SOURCE}/framebuffer_stretch_guard.cpp" OR
++       NOT EXISTS "${rx7900_stretch_shared}/lightning-display.h")
++        message(FATAL_ERROR "RX7900_FRAMEBUFFER_STRETCH_GUARD_SOURCE must select the complete RX7900 source")
++    endif()
++    target_sources(win32k PRIVATE "${RX7900_FRAMEBUFFER_STRETCH_GUARD_SOURCE}/framebuffer_stretch_guard.cpp" "${RX7900_FRAMEBUFFER_STRETCH_GUARD_SOURCE}/framebuffer_engine_sync.cpp")
++    target_include_directories(win32k PRIVATE "${RX7900_FRAMEBUFFER_STRETCH_GUARD_SOURCE}"
++        "${rx7900_stretch_shared}")
++    target_compile_definitions(win32k PRIVATE RX7900_FRAMEBUFFER_STRETCH_GUARD)
++    set_target_properties(win32k PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES
++        WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
++endif()
++
+ # Optional cursor recovery reselects the engine-owned original shape after a
+ # positively identified Lightning movement failure. Other drivers are unchanged.
+ option(RX7900_FRAMEBUFFER_CURSOR_RECOVERY "Recover failed Lightning cursor moves" OFF)
+--- a/win32ss/gdi/eng/stretchblt.c
++++ b/win32ss/gdi/eng/stretchblt.c
+@@ -8,6 +8,9 @@
+  */
+ 
+ #include <win32k.h>
++#ifdef RX7900_FRAMEBUFFER_STRETCH_GUARD
++#include "framebuffer_stretch_guard.hpp"
++#endif
+ 
+ #define NDEBUG
+ #include <debug.h>
+@@ -796,6 +799,13 @@
+     /* Call the driver's DrvStretchBlt if available */
+     if (psurfDest->flags & HOOK_STRETCHBLTROP)
+     {
++#ifdef RX7900_FRAMEBUFFER_STRETCH_GUARD
++        /* This stack-only tag reaches only an identified paired Lightning DDI.
++         * Preserve originals for the engine's existing mirrored fallback. */
++        RX7900_STRETCH_GUARD stretchGuard;
++        COLORADJUSTMENT *driverAdjustment = Rx7900StretchGuardPrepare(&stretchGuard,
++            psoDest, GDIDEVFUNCS(psoDest).Escape, pca, bLeftToRight, bTopToBottom);
++#endif
+         DPRINT("About to call GDIDEVFUNCS(psoDest).StretchBltROP.\n");
+         /* Drv->StretchBltROP (look at http://www.osronline.com/ddkx/graphics/ddifncs_0z3b.htm ) */
+         ret = GDIDEVFUNCS(psoDest).StretchBltROP(psoDest,
+@@ -803,7 +813,11 @@
+                                                  MaskSurf,
+                                                  ClipRegion,
+                                                  ColorTranslation,
++#ifdef RX7900_FRAMEBUFFER_STRETCH_GUARD
++                                                 driverAdjustment,
++#else
+                                                  pca,
++#endif
+                                                  BrushOrigin,
+                                                  &OutputRect,
+                                                  &InputRect,
+--- a/win32ss/gdi/eng/lineto.c
++++ b/win32ss/gdi/eng/lineto.c
+@@ -7,6 +7,9 @@
+  */
+ 
+ #include <win32k.h>
++#ifdef RX7900_FRAMEBUFFER_STRETCH_GUARD
++#include "framebuffer_stretch_guard.hpp"
++#endif
+ 
+ #define NDEBUG
+ #include <debug.h>
+@@ -689,7 +692,13 @@
+     {
+         /* Call the driver's DrvLineTo */
+         ret = GDIDEVFUNCS(psoDest).LineTo(
+-                  psoDest, ClipObj, pbo, x1, y1, x2, y2, &b, Mix);
++                  psoDest, ClipObj, pbo, x1, y1, x2, y2, &b,
++#ifdef RX7900_FRAMEBUFFER_STRETCH_GUARD
++                  Rx7900LinePrepare(psoDest, GDIDEVFUNCS(psoDest).Escape,
++                                    Mix, GdiBrush->pbrush->dwStyleCount));
++#else
++                  Mix);
++#endif
+     }
+ 
+ #if 0
+--- a/win32ss/gdi/eng/gradient.c
++++ b/win32ss/gdi/eng/gradient.c
+@@ -7,6 +7,9 @@
+  */
+ 
+ #include <win32k.h>
++#ifdef RX7900_FRAMEBUFFER_STRETCH_GUARD
++#include "framebuffer_stretch_guard.hpp"
++#endif
+ 
+ #define NDEBUG
+ #include <debug.h>
+@@ -187,11 +190,22 @@
+ }
+ 
+ /* Fill triangle with solid color */
++#ifdef RX7900_FRAMEBUFFER_STRETCH_GUARD
++#define S_FILLLINE(linefrom,lineto) \
++  if(sx[lineto] < sx[linefrom]) { \
++    if (Rx7900GradientSpanVisible(max(sx[lineto], FillRect.left), min(sx[linefrom], FillRect.right), sy, &FillRect)) \
++      DibFunctionsForBitmapFormat[psoOutput->iBitmapFormat].DIB_HLine(psoOutput, max(sx[lineto], FillRect.left), min(sx[linefrom], FillRect.right), sy, Color); \
++  } else { \
++    if (Rx7900GradientSpanVisible(max(sx[linefrom], FillRect.left), min(sx[lineto], FillRect.right), sy, &FillRect)) \
++      DibFunctionsForBitmapFormat[psoOutput->iBitmapFormat].DIB_HLine(psoOutput, max(sx[linefrom], FillRect.left), min(sx[lineto], FillRect.right), sy, Color); \
++  }
++#else
+ #define S_FILLLINE(linefrom,lineto) \
+   if(sx[lineto] < sx[linefrom]) \
+     DibFunctionsForBitmapFormat[psoOutput->iBitmapFormat].DIB_HLine(psoOutput, max(sx[lineto], FillRect.left), min(sx[linefrom], FillRect.right), sy, Color); \
+   else \
+     DibFunctionsForBitmapFormat[psoOutput->iBitmapFormat].DIB_HLine(psoOutput, max(sx[linefrom], FillRect.left), min(sx[lineto], FillRect.right), sy, Color);
++#endif
+ 
+ #define S_DOLINE(a,b,line) \
+   ex[line] += dx[line]; \
+--- a/win32ss/gdi/ntgdi/gdibatch.c
++++ b/win32ss/gdi/ntgdi/gdibatch.c
+@@ -1,5 +1,8 @@
+ 
+ #include <win32k.h>
++#ifdef RX7900_FRAMEBUFFER_STRETCH_GUARD
++#include "framebuffer_stretch_guard.hpp"
++#endif
+ 
+ #define NDEBUG
+ #include <debug.h>
+@@ -52,6 +55,10 @@
+   if (Flags & GCAPS2_SYNCTIMER)
+       Flags = DSS_TIMER_EVENT;
+ 
++#ifdef RX7900_FRAMEBUFFER_STRETCH_GUARD
++  Rx7900SynchronizePrimary(Flags);
++  return;
++#endif
+   //Device = IntEnumHDev();
+ //  UNIMPLEMENTED;
+ //ASSERT(FALSE);
+--- a/win32ss/gdi/ntgdi/fillshap.c
++++ b/win32ss/gdi/ntgdi/fillshap.c
+@@ -7,6 +7,9 @@
+  */
+ 
+ #include <win32k.h>
++#ifdef RX7900_FRAMEBUFFER_STRETCH_GUARD
++#include "framebuffer_stretch_guard.hpp"
++#endif
+ 
+ #define NDEBUG
+ #include <debug.h>
+@@ -1089,6 +1092,13 @@
+         return FALSE;
+     }
+ 
++#ifdef RX7900_FRAMEBUFFER_STRETCH_GUARD
++    if (!Rx7900GradientCaptureBytes(ulMode, nVertex, nMesh, &cbVertex, &cbMesh))
++    {
++        EngSetLastError(ERROR_INVALID_PARAMETER);
++        return FALSE;
++    }
++#else
+     switch (ulMode)
+     {
+         case GRADIENT_FILL_RECT_H:
+@@ -1109,6 +1119,8 @@
+         /* Overflow */
+         return FALSE ;
+     }
++
++#endif
+ 
+     /* Allocate a kernel mode buffer */
+     SafeVertex = ExAllocatePoolWithTag(PagedPool, cbVertex + cbMesh, TAG_SHAPE);

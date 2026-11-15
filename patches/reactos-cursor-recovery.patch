@@ -1,0 +1,215 @@
+--- a/win32ss/gdi/eng/mouse.c
++++ b/win32ss/gdi/eng/mouse.c
+@@ -10,4 +10,7 @@
+ 
+ #include <win32k.h>
++#ifdef RX7900_FRAMEBUFFER_CURSOR_RECOVERY
++#include "framebuffer_cursor_recovery.hpp"
++#endif
+ 
+ #define NDEBUG
+@@ -795,4 +798,73 @@
+ }
+ 
++static BOOL
++NTAPI
++GreMovePointerInternal(
++    _In_ HDC hdc,
++    _In_ LONG x,
++    _In_ LONG y,
++    _In_ BOOL CheckRecovery)
++{
++    PDC pdc;
++    PRECTL prcl;
++    BOOL Healthy = TRUE;
++
++#ifndef RX7900_FRAMEBUFFER_CURSOR_RECOVERY
++    UNREFERENCED_PARAMETER(CheckRecovery);
++#endif
++
++    /* Lock the DC */
++    pdc = DC_LockDc(hdc);
++    if (!pdc)
++    {
++        DPRINT1("Failed to lock the DC.\n");
++        return TRUE;
++    }
++    ASSERT(pdc->dctype == DCTYPE_DIRECT);
++
++    /* Acquire PDEV lock */
++    EngAcquireSemaphore(pdc->ppdev->hsemDevLock);
++
++    /* Check if we need to move it */
++    if(pdc->ppdev->SafetyRemoveLevel == 0 && pdc->ppdev->pSurface != NULL)
++    {
++        SURFOBJ* pso = &pdc->ppdev->pSurface->SurfObj;
++
++        /* Store the cursor exclude position in the PDEV */
++        prcl = &pdc->ppdev->Pointer.Exclude;
++
++        /* Send new position of the hot spot of the pointer (will likely redraw cursor) */
++        if (pdc->ppdev->flFlags & PDEV_HARDWARE_POINTER)
++            pdc->ppdev->pfnMovePointer(pso, x, y, prcl);
++        else if (pdc->ppdev->flFlags & PDEV_SOFTWARE_POINTER)
++            EngMovePointer(pso, x, y, prcl);
++
++        /* If panning device, and we're not hiding the cursor, notify cursor's current position.
++         * (driver may already have been called if it also supports hardware pointers) */
++        if (pdc->ppdev->devinfo.flGraphicsCaps & GCAPS_PANNING && y >= 0)
++            pdc->ppdev->pfnMovePointer(pso, x, y - pso->sizlBitmap.cy, NULL);
++
++#ifdef RX7900_FRAMEBUFFER_CURSOR_RECOVERY
++        /* The VOID DDI has returned and released its driver registry guard.
++         * Query only; the caller reselects its owned original cursor after both
++         * PDEV/DC locks below retire, preserving the existing lock order. */
++        if (CheckRecovery && x != -1 &&
++            (pdc->ppdev->flFlags & PDEV_HARDWARE_POINTER) &&
++            Rx7900CursorMoveNeedsRecovery(pso, pdc->ppdev->DriverFunctions.Escape))
++        {
++            Healthy = FALSE;
++        }
++#endif
++    }
++
++    /* Release PDEV lock */
++    EngReleaseSemaphore(pdc->ppdev->hsemDevLock);
++
++    /* Unlock the DC */
++    DC_UnlockDc(pdc);
++
++    return Healthy;
++}
++
+ VOID
+ NTAPI
+@@ -802,45 +874,18 @@
+     _In_ LONG y)
+ {
+-    PDC pdc;
+-    PRECTL prcl;
+-
+-    /* Lock the DC */
+-    pdc = DC_LockDc(hdc);
+-    if (!pdc)
+-    {
+-        DPRINT1("Failed to lock the DC.\n");
+-        return;
+-    }
+-    ASSERT(pdc->dctype == DCTYPE_DIRECT);
+-
+-    /* Acquire PDEV lock */
+-    EngAcquireSemaphore(pdc->ppdev->hsemDevLock);
+-
+-    /* Check if we need to move it */
+-    if(pdc->ppdev->SafetyRemoveLevel == 0)
+-    {
+-        SURFOBJ* pso = &pdc->ppdev->pSurface->SurfObj;
+-
+-        /* Store the cursor exclude position in the PDEV */
+-        prcl = &pdc->ppdev->Pointer.Exclude;
+-
+-        /* Send new position of the hot spot of the pointer (will likely redraw cursor) */
+-        if (pdc->ppdev->flFlags & PDEV_HARDWARE_POINTER)
+-            pdc->ppdev->pfnMovePointer(pso, x, y, prcl);
+-        else if (pdc->ppdev->flFlags & PDEV_SOFTWARE_POINTER)
+-            EngMovePointer(pso, x, y, prcl);
+-
+-        /* If panning device, and we're not hiding the cursor, notify cursor's current position.
+-         * (driver may already have been called if it also supports hardware pointers) */
+-        if (pdc->ppdev->devinfo.flGraphicsCaps & GCAPS_PANNING && y >= 0)
+-            pdc->ppdev->pfnMovePointer(pso, x, y - pso->sizlBitmap.cy, NULL);
+-    }
+-
+-    /* Release PDEV lock */
+-    EngReleaseSemaphore(pdc->ppdev->hsemDevLock);
+-
+-    /* Unlock the DC */
+-    DC_UnlockDc(pdc);
+-}
++    (void)GreMovePointerInternal(hdc, x, y, FALSE);
++}
++
++#ifdef RX7900_FRAMEBUFFER_CURSOR_RECOVERY
++BOOL
++NTAPI
++GreMovePointerChecked(
++    _In_ HDC hdc,
++    _In_ LONG x,
++    _In_ LONG y)
++{
++    return GreMovePointerInternal(hdc, x, y, TRUE);
++}
++#endif
+ 
+ 
+--- a/win32ss/gdi/eng/mouse.h
++++ b/win32ss/gdi/eng/mouse.h
+@@ -50,2 +50,11 @@
+     _In_ LONG y);
+ 
++#ifdef RX7900_FRAMEBUFFER_CURSOR_RECOVERY
++/* FALSE requests shape reselect only after the PDEV/DC locks were released. */
++BOOL
++NTAPI
++GreMovePointerChecked(
++    _In_ HDC hdc,
++    _In_ LONG x,
++    _In_ LONG y);
++#endif
+--- a/win32ss/user/ntuser/msgqueue.c
++++ b/win32ss/user/ntuser/msgqueue.c
+@@ -669,5 +669,9 @@
+            {
+                /* Check if shape has changed */
+-               if(CurInfo->CurrentCursorObject != MessageQueue->CursorObject)
++               if(CurInfo->CurrentCursorObject != MessageQueue->CursorObject
++#ifdef RX7900_FRAMEBUFFER_CURSOR_RECOVERY
++                  || !GreMovePointerChecked(hdcScreen, Msg->pt.x, Msg->pt.y)
++#endif
++                 )
+                {
+                    /* Call GDI to set the new screen cursor */
+@@ -679,10 +683,20 @@
+                                        MessageQueue->CursorObject->xHotspot,
+                                        MessageQueue->CursorObject->yHotspot,
++#ifdef RX7900_FRAMEBUFFER_CURSOR_RECOVERY
++                                       /* SetCursorPos updates the shared cursor only after
++                                        * dispatching this message. Recover at its new point. */
++                                       Msg->pt.x,
++                                       Msg->pt.y,
++#else
+                                        gpsi->ptCursor.x,
+                                        gpsi->ptCursor.y,
++#endif
+                                        MessageQueue->CursorObject->hbmAlpha ? SPS_ALPHA : 0);
+ 
+-               } else
++               }
++#ifndef RX7900_FRAMEBUFFER_CURSOR_RECOVERY
++               else
+                    GreMovePointer(hdcScreen, Msg->pt.x, Msg->pt.y);
++#endif
+            }
+            /* Check if we have to hide cursor */
+--- a/win32ss/CMakeLists.txt
++++ b/win32ss/CMakeLists.txt
+@@ -265,4 +265,19 @@
+ 
++# Optional cursor recovery reselects the engine-owned original shape after a
++# positively identified Lightning movement failure. Other drivers are unchanged.
++option(RX7900_FRAMEBUFFER_CURSOR_RECOVERY "Recover failed Lightning cursor moves" OFF)
++set(RX7900_FRAMEBUFFER_CURSOR_RECOVERY_SOURCE "" CACHE PATH "RX7900 native C++ source directory")
++if(RX7900_FRAMEBUFFER_CURSOR_RECOVERY)
++    if(NOT EXISTS "${RX7900_FRAMEBUFFER_CURSOR_RECOVERY_SOURCE}/framebuffer_cursor_recovery.cpp")
++        message(FATAL_ERROR "RX7900_FRAMEBUFFER_CURSOR_RECOVERY_SOURCE must contain framebuffer_cursor_recovery.cpp")
++    endif()
++    target_sources(win32k PRIVATE "${RX7900_FRAMEBUFFER_CURSOR_RECOVERY_SOURCE}/framebuffer_cursor_recovery.cpp")
++    target_include_directories(win32k PRIVATE "${RX7900_FRAMEBUFFER_CURSOR_RECOVERY_SOURCE}")
++    target_compile_definitions(win32k PRIVATE RX7900_FRAMEBUFFER_CURSOR_RECOVERY)
++    set_target_properties(win32k PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES
++        WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
++endif()
++
+ if(USE_DIBLIB)
+     target_link_libraries(win32k diblib)
+ endif()

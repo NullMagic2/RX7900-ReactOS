@@ -1,0 +1,99 @@
+--- a/win32ss/gdi/ntgdi/freetype.c
++++ b/win32ss/gdi/ntgdi/freetype.c
+@@ -11,6 +11,9 @@
+ #ifdef RX7900_FRAMEBUFFER_TEXT_BATCH
+ #include "framebuffer_text_batch.hpp"
+ #endif
++#ifdef RX7900_RADEON_TEXT_BRIDGE
++#include "radeon_text_engine.hpp"
++#endif
+ 
+ #include FT_GLYPH_H
+ #include FT_TYPE1_TABLES_H
+@@ -6716,6 +6719,9 @@
+ #ifdef RX7900_FRAMEBUFFER_TEXT_BATCH
+     RX7900_TEXT_BATCH_CONTEXT textBatch = {0};
+ #endif
++#ifdef RX7900_RADEON_TEXT_BRIDGE
++    RX7900_RADEON_TEXT_CONTEXT radeonText = {0};
++#endif
+ 
+     /* Check if String is valid */
+     if (Count > 0xFFFF || (Count > 0 && String == NULL))
+@@ -6946,6 +6952,11 @@
+         (psoDest->iType != STYPE_BITMAP && psoDest->hdev != NULL) ? GDIDEVFUNCS(psoDest).Escape : NULL,
+         (psoDest->iType != STYPE_BITMAP && psoDest->hdev != NULL) ? GDIDEVFUNCS(psoDest).Notify : NULL);
+ #endif
++#ifdef RX7900_RADEON_TEXT_BRIDGE
++    Rx7900RadeonTextBegin(&radeonText, psoDest,
++        (psoDest->iType != STYPE_BITMAP && psoDest->hdev != NULL) ? GDIDEVFUNCS(psoDest).Escape : NULL,
++        (psoDest->iType != STYPE_BITMAP && psoDest->hdev != NULL) ? GDIDEVFUNCS(psoDest).Notify : NULL);
++#endif
+     for (i = 0; i < Count; ++i)
+     {
+         ch0 = *String++;
+@@ -7015,6 +7026,11 @@
+                 (psoDest->iType != STYPE_BITMAP && psoDest->hdev != NULL) ? GDIDEVFUNCS(psoDest).Escape : NULL,
+                 (psoDest->iType != STYPE_BITMAP && psoDest->hdev != NULL) ? GDIDEVFUNCS(psoDest).Notify : NULL);
+ #endif
++#ifdef RX7900_RADEON_TEXT_BRIDGE
++            Rx7900RadeonTextBegin(&radeonText, psoDest,
++                (psoDest->iType != STYPE_BITMAP && psoDest->hdev != NULL) ? GDIDEVFUNCS(psoDest).Escape : NULL,
++                (psoDest->iType != STYPE_BITMAP && psoDest->hdev != NULL) ? GDIDEVFUNCS(psoDest).Notify : NULL);
++#endif
+             glyphSize.cx = spaceWidth.cx;
+             realglyph->left = 0;
+         }
+@@ -7075,6 +7091,18 @@
+                 }
+             }
+ 
++#ifdef RX7900_RADEON_TEXT_BRIDGE
++            ULONG radeonGlyphResult = Rx7900RadeonTextGlyph(&radeonText, psoGlyph,
++                (CLIPOBJ *)&dc->co, &exloRGB2Dst.xlo, &exloDst2RGB.xlo,
++                &DestRect, (PPOINTL)&MaskRect, &dc->eboText.BrushObject);
++            if (radeonGlyphResult == RX7900_RADEON_GLYPH_FAILED)
++            {
++                bResult = FALSE;
++                DoBreak = TRUE;
++            }
++            if (radeonGlyphResult == RX7900_RADEON_GLYPH_UNSUPPORTED)
++            {
++#endif
+ #ifdef RX7900_FRAMEBUFFER_TEXT_BATCH
+             /* The private helper submits owned coverage or synchronizes the
+              * original engine bitmap before an exact CPU fallback. */
+@@ -7109,6 +7137,9 @@
+ #ifdef RX7900_FRAMEBUFFER_TEXT_BATCH
+             }
+ #endif
++#ifdef RX7900_RADEON_TEXT_BRIDGE
++            }
++#endif
+ 
+             EngUnlockSurface(psoGlyph);
+             EngDeleteSurface((HSURF)hbmGlyph);
+--- a/win32ss/CMakeLists.txt
++++ b/win32ss/CMakeLists.txt
+@@ -262,6 +262,21 @@
+     set_target_properties(win32k PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES
+         WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+ endif()
++# A source-pinned physical Radeon glyph bridge forwards only the locked
++# FreeType mask and the current DC clip to an identity-checked display DDI.
++option(RX7900_RADEON_TEXT_BRIDGE "Submit supported glyphs to radeondisp" OFF)
++set(RX7900_RADEON_TEXT_BRIDGE_SOURCE "" CACHE PATH "RX7900 native C++ source directory")
++if(RX7900_RADEON_TEXT_BRIDGE)
++    if(NOT EXISTS "${RX7900_RADEON_TEXT_BRIDGE_SOURCE}/radeon_text_engine.cpp" OR
++       NOT EXISTS "${RX7900_RADEON_TEXT_BRIDGE_SOURCE}/radeon_text_bridge.hpp")
++        message(FATAL_ERROR "RX7900_RADEON_TEXT_BRIDGE_SOURCE must contain the paired Radeon text bridge")
++    endif()
++    target_sources(win32k PRIVATE "${RX7900_RADEON_TEXT_BRIDGE_SOURCE}/radeon_text_engine.cpp")
++    target_include_directories(win32k PRIVATE "${RX7900_RADEON_TEXT_BRIDGE_SOURCE}")
++    target_compile_definitions(win32k PRIVATE RX7900_RADEON_TEXT_BRIDGE)
++    set_target_properties(win32k PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES
++        WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
++endif()
+ target_link_libraries(win32k ${PSEH_LIB} dxguid libcntpr)
+ 
+ # Optional paired stretch admission preserves engine mirror orientation.
