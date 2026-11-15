@@ -1,0 +1,1563 @@
+diff --git a/drivers/bus/pci/CMakeLists.txt b/drivers/bus/pci/CMakeLists.txt
+index 3e8fe17..95c8d03 100644
+--- a/drivers/bus/pci/CMakeLists.txt
++++ b/drivers/bus/pci/CMakeLists.txt
+@@ -6,10 +6,15 @@ list(APPEND SOURCE
+     fdo.c
+     pci.c
+     pdo.c
++    bar_probe.cpp
++    bar_probe_policy.cpp
++    resource_snapshot.cpp
+     pci.h)
+ 
+ add_library(pci MODULE ${SOURCE} pci.rc)
+ set_module_type(pci kernelmodedriver)
++set_target_properties(pci PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES
++    WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
+ add_importlibs(pci ntoskrnl hal)
+ add_pch(pci pci.h SOURCE)
+ add_cd_file(TARGET pci DESTINATION reactos/system32/drivers NO_CAB FOR all)
+diff --git a/drivers/bus/pci/bar_probe.cpp b/drivers/bus/pci/bar_probe.cpp
+new file mode 100644
+index 0000000..2955041
+--- /dev/null
++++ b/drivers/bus/pci/bar_probe.cpp
+@@ -0,0 +1,126 @@
++/*
++Module: reactos.pci.bar_probe
++Purpose: Perform exact-width HAL configuration reads for safe BAR sizing.
++Created: 2026-10-21
++Architecture: C++17 native boundary; pure policy owns rollback and publication.
++*/
++#include "pci.h"
++#include "bar_probe.h"
++#include "bar_probe_policy.hpp"
++#include "bar_probe_native.hpp"
++
++namespace {
++constexpr ULONG command_offset = 4;
++constexpr ULONG first_bar_offset = 0x10;
++KSPIN_LOCK config_lock;
++
++// Config BUS_INTERFACE callbacks may run through DIRQL. A DPC-only gate could
++// deadlock if a same-CPU ISR reader preempted a sizing transaction. All native
++// PCI-driver config paths take this HIGH_LEVEL gate before HAL's separate lock.
++// No allocation, logging or pageable storage is accessed while it is held.
++class ConfigGuard final {
++public:
++    ConfigGuard() noexcept {
++        KeRaiseIrql(HIGH_LEVEL, &previous_);
++        KeAcquireSpinLockAtDpcLevel(&config_lock);
++    }
++    ~ConfigGuard() {
++        KeReleaseSpinLockFromDpcLevel(&config_lock);
++        KeLowerIrql(previous_);
++    }
++    ConfigGuard(const ConfigGuard&) = delete;
++    ConfigGuard& operator=(const ConfigGuard&) = delete;
++private:
++    KIRQL previous_{};
++};
++struct ConfigLocation final { ULONG bus; ULONG slot; ULONG bar; };
++
++bool read_command(void* context, uint16_t& value) noexcept {
++    const auto& location = *static_cast<const ConfigLocation*>(context);
++    USHORT native = 0;
++    const ULONG bytes = HalGetBusDataByOffset(PCIConfiguration, location.bus,
++        location.slot, &native, command_offset, sizeof(native));
++    value = native;
++    return bytes == sizeof(native);
++}
++
++bool write_command(void* context, uint16_t value) noexcept {
++    const auto& location = *static_cast<const ConfigLocation*>(context);
++    USHORT native = value;
++    return HalSetBusDataByOffset(PCIConfiguration, location.bus, location.slot,
++        &native, command_offset, sizeof(native)) == sizeof(native);
++}
++
++bool read_bar(void* context, uint32_t& value) noexcept {
++    const auto& location = *static_cast<const ConfigLocation*>(context);
++    ULONG native = 0;
++    const ULONG bytes = HalGetBusDataByOffset(PCIConfiguration, location.bus,
++        location.slot, &native, location.bar, sizeof(native));
++    value = native;
++    return bytes == sizeof(native);
++}
++
++bool write_bar(void* context, uint32_t value) noexcept {
++    const auto& location = *static_cast<const ConfigLocation*>(context);
++    ULONG native = value;
++    return HalSetBusDataByOffset(PCIConfiguration, location.bus, location.slot,
++        &native, location.bar, sizeof(native)) == sizeof(native);
++}
++pci::ProbeStatus probe_dword(void* context, uint32_t index,
++                             pci::ProbeValue& output) noexcept {
++    auto& location = *static_cast<ConfigLocation*>(context);
++    location.bar = first_bar_offset + index * static_cast<ULONG>(sizeof(ULONG));
++    return pci::probe_bar({&location, read_command, write_command, read_bar, write_bar}, output);
++}
++} // namespace
++
++extern "C" VOID NTAPI PciInitializeConfigAccess(VOID) {
++    KeInitializeSpinLock(&config_lock);
++}
++
++extern "C" ULONG NTAPI PciReadConfig(ULONG bus, ULONG slot, PVOID buffer,
++                                    ULONG offset, ULONG bytes) {
++    if (buffer == nullptr || bytes == 0 || bytes > MAXULONG - offset) {
++        return 0;
++    }
++    ConfigGuard transaction;
++    return HalGetBusDataByOffset(PCIConfiguration, bus, slot, buffer, offset, bytes);
++}
++
++extern "C" ULONG NTAPI PciWriteConfig(ULONG bus, ULONG slot, PVOID buffer,
++                                     ULONG offset, ULONG bytes) {
++    if (buffer == nullptr || bytes == 0 || bytes > MAXULONG - offset) {
++        return 0;
++    }
++    ConfigGuard transaction;
++    return HalSetBusDataByOffset(PCIConfiguration, bus, slot, buffer, offset, bytes);
++}
++
++NTSTATUS pci::capture_resources(PPDO_DEVICE_EXTENSION device,
++                                ResourceSnapshot& output) noexcept {
++    ResourceSnapshot candidate{};
++    SnapshotStatus status{};
++    {
++        ConfigGuard transaction;
++        ConfigLocation location{device->PciDevice->BusNumber,
++            device->PciDevice->SlotNumber.u.AsULONG, first_bar_offset};
++        if (HalGetBusDataByOffset(PCIConfiguration, location.bus, location.slot,
++            &candidate.config, 0, PCI_COMMON_HDR_LENGTH) != PCI_COMMON_HDR_LENGTH) {
++            return STATUS_UNSUCCESSFUL;
++        }
++        if (candidate.config.VendorID == 0 || candidate.config.VendorID == PCI_INVALID_VENDORID) {
++            return STATUS_NO_SUCH_DEVICE;
++        }
++        status = capture_bars({&location, probe_dword},
++            PCI_CONFIGURATION_TYPE(&candidate.config), candidate.bars);
++    }
++    if (status == SnapshotStatus::unsupported_header ||
++        status == SnapshotStatus::length_unrepresentable) {
++        return STATUS_NOT_SUPPORTED;
++    }
++    if (status != SnapshotStatus::success) {
++        return STATUS_DEVICE_CONFIGURATION_ERROR;
++    }
++    output = candidate;
++    return STATUS_SUCCESS;
++}
+diff --git a/drivers/bus/pci/bar_probe.h b/drivers/bus/pci/bar_probe.h
+new file mode 100644
+index 0000000..af22ceb
+--- /dev/null
++++ b/drivers/bus/pci/bar_probe.h
+@@ -0,0 +1,18 @@
++/*
++Module: reactos.pci.bar_probe
++Purpose: Bind the existing C PCI enumerator to the C++ sizing transaction.
++Created: 2026-10-21
++Architecture: Native HAL callback adapter; caller owns its output words.
++*/
++#pragma once
++#ifdef __cplusplus
++extern "C" {
++#endif
++VOID NTAPI PciInitializeConfigAccess(VOID);
++ULONG NTAPI PciReadConfig(ULONG bus, ULONG slot, PVOID buffer, ULONG offset, ULONG bytes);
++ULONG NTAPI PciWriteConfig(ULONG bus, ULONG slot, PVOID buffer, ULONG offset, ULONG bytes);
++NTSTATUS NTAPI PciQueryResourceRequirements(PVOID extension, PULONG_PTR information);
++NTSTATUS NTAPI PciQueryResources(PVOID extension, PULONG_PTR information);
++#ifdef __cplusplus
++}
++#endif
+diff --git a/drivers/bus/pci/bar_probe_native.hpp b/drivers/bus/pci/bar_probe_native.hpp
+new file mode 100644
+index 0000000..40d34b2
+--- /dev/null
++++ b/drivers/bus/pci/bar_probe_native.hpp
+@@ -0,0 +1,16 @@
++/*
++Module: reactos.pci.bar_probe_native
++Purpose: Share one device-owned capture between native resource builders.
++Created: 2026-10-21
++Architecture: Resident capture; allocation/filling happens after config unlock.
++*/
++#pragma once
++#include "pci.h"
++#include "bar_probe_policy.hpp"
++namespace pci {
++struct ResourceSnapshot final {
++    PCI_COMMON_CONFIG config{};
++    BarSnapshot bars{};
++};
++NTSTATUS capture_resources(PPDO_DEVICE_EXTENSION device, ResourceSnapshot& output) noexcept;
++} // namespace pci
+diff --git a/drivers/bus/pci/bar_probe_policy.cpp b/drivers/bus/pci/bar_probe_policy.cpp
+new file mode 100644
+index 0000000..9456935
+--- /dev/null
++++ b/drivers/bus/pci/bar_probe_policy.cpp
+@@ -0,0 +1,168 @@
++/*
++Module: reactos.pci.bar_probe_policy
++Purpose: Restore PCI BAR and decode state across sizing and I/O failures.
++Created: 2026-10-21
++Architecture: No native pointers, allocation, exceptions or platform runtime.
++*/
++#include "bar_probe_policy.hpp"
++
++namespace pci {
++namespace {
++constexpr uint16_t decode_mask = 3; // PCI command I/O-space and memory-space enable.
++constexpr uint32_t sizing_value = UINT32_MAX;
++
++bool command_is(ProbeAccess access, uint16_t expected) noexcept {
++    uint16_t observed = 0;
++    return access.read_command(access.context, observed) && observed == expected;
++}
++
++bool restore_command(ProbeAccess access, uint16_t command) noexcept {
++    return access.write_command(access.context, command) && command_is(access, command);
++}
++} // namespace
++
++ProbeStatus probe_bar(ProbeAccess access, ProbeValue& output) noexcept {
++    if (access.read_command == nullptr || access.write_command == nullptr ||
++        access.read_bar == nullptr || access.write_bar == nullptr) {
++        return ProbeStatus::invalid_access;
++    }
++
++    ProbeValue candidate{};
++    uint16_t original_command = 0;
++
++    if (!access.read_bar(access.context, candidate.original) ||
++        !access.read_command(access.context, original_command)) {
++        return ProbeStatus::read_failed;
++    }
++
++    const uint16_t disabled = static_cast<uint16_t>(original_command & ~decode_mask);
++
++    if (original_command != disabled) {
++        if (!access.write_command(access.context, disabled) || !command_is(access, disabled)) {
++            // BAR was never touched. Restore command even after a partial write.
++            return restore_command(access, original_command) ? ProbeStatus::disable_failed :
++                                                               ProbeStatus::restore_failed;
++        }
++    }
++
++    const bool probed = access.write_bar(access.context, sizing_value) &&
++                        access.read_bar(access.context, candidate.mask);
++    uint32_t restored_bar = 0;
++
++    // A failed/partial sizing write may still have changed the BAR. Restore it
++    // on both success and failure, before re-enabling either decode bit.
++    if (!access.write_bar(access.context, candidate.original) ||
++        !access.read_bar(access.context, restored_bar) || restored_bar != candidate.original) {
++        return ProbeStatus::restore_failed;
++    }
++
++    if (original_command != disabled && !restore_command(access, original_command)) {
++        return ProbeStatus::restore_failed;
++    }
++    if (!probed) {
++        return ProbeStatus::probe_failed;
++    }
++
++    output = candidate;
++    return ProbeStatus::success;
++}
++
++SnapshotStatus capture_bars(SnapshotAccess access, uint8_t header_type,
++                            BarSnapshot& output) noexcept {
++    if (access.probe == nullptr) {
++        return SnapshotStatus::invalid_access;
++    }
++
++    const uint32_t limit = header_type == 0 ? 6u : header_type == 1 ? 2u : 0u;
++
++    if (limit == 0) {
++        return SnapshotStatus::unsupported_header;
++    }
++
++    BarSnapshot candidate{};
++
++    for (uint32_t bar = 0; bar < limit;) {
++        const uint32_t first = bar;
++        ProbeValue low{};
++
++        if (access.probe(access.context, bar++, low) != ProbeStatus::success) {
++            return SnapshotStatus::probe_failed;
++        }
++
++        const bool io = (low.original & 1u) != 0;
++        const uint32_t type = low.original & 6u;
++        uint64_t original = low.original;
++        uint64_t mask = low.mask;
++        uint64_t address_mask = io ? 0xfffffffcu : 0xfffffff0u;
++        uint64_t maximum_address = UINT32_MAX;
++        const uint32_t flags_mask = io ? 3u : 15u;
++
++        if (!io && type == 4u) {
++            if (bar == limit) {
++                return SnapshotStatus::invalid_bar;
++            }
++
++            ProbeValue high{};
++
++            if (access.probe(access.context, bar++, high) != ProbeStatus::success) {
++                return SnapshotStatus::probe_failed;
++            }
++
++            original |= static_cast<uint64_t>(high.original) << 32;
++            mask |= static_cast<uint64_t>(high.mask) << 32;
++            address_mask = UINT64_MAX & ~uint64_t{15};
++            maximum_address = UINT64_MAX;
++        } else if (!io && type == 2u) {
++            address_mask = 0x000ffff0u;
++            maximum_address = 0x000fffffu;
++        } else if (!io && type != 0) {
++            return SnapshotStatus::invalid_bar;
++        } else if (io && (mask & 0xffff0000u) == 0 && (original & 0xffff0000u) == 0) {
++            address_mask = 0x0000fffcu;
++            maximum_address = 0x0000ffffu;
++        }
++
++        if (mask == 0) {
++            continue; // Unimplemented BAR, never a descriptor.
++        }
++
++        if ((low.mask & flags_mask) != (low.original & flags_mask) ||
++            (original & ~(address_mask | flags_mask)) != 0) {
++            return SnapshotStatus::invalid_bar;
++        }
++
++        const uint64_t address_bits = mask & address_mask;
++
++        if (address_bits == 0) {
++            return SnapshotStatus::length_unrepresentable;
++        }
++
++        const uint64_t length = address_bits & (~address_bits + 1u);
++
++        if (length > UINT32_MAX) {
++            return SnapshotStatus::length_unrepresentable;
++        }
++
++        if (address_bits != (address_mask & ~(length - 1u))) {
++            return SnapshotStatus::invalid_bar;
++        }
++
++        const uint64_t base = original & address_mask;
++
++        if (length - 1u > UINT64_MAX - base || base + length - 1u > maximum_address) {
++            return SnapshotStatus::address_overflow;
++        }
++
++        if ((base & (length - 1u)) != 0) {
++            return SnapshotStatus::invalid_bar;
++        }
++
++        candidate.ranges[candidate.count] = BarRange{base, length, maximum_address,
++            low.original & flags_mask, static_cast<uint8_t>(first)};
++        ++candidate.count;
++    }
++
++    output = candidate;
++    return SnapshotStatus::success;
++}
++} // namespace pci
+diff --git a/drivers/bus/pci/bar_probe_policy.hpp b/drivers/bus/pci/bar_probe_policy.hpp
+new file mode 100644
+index 0000000..babc624
+--- /dev/null
++++ b/drivers/bus/pci/bar_probe_policy.hpp
+@@ -0,0 +1,68 @@
++/*
++Module: reactos.pci.bar_probe_policy
++Purpose: Size a PCI BAR without decoding transient probe addresses.
++Created: 2026-10-21
++Architecture: Allocation-free C++17 transaction; native HAL owns config access.
++*/
++#pragma once
++#include <stdint.h>
++
++namespace pci {
++
++struct ProbeAccess final {
++    void* context;
++    bool (*read_command)(void*, uint16_t&) noexcept;
++    bool (*write_command)(void*, uint16_t) noexcept;
++    bool (*read_bar)(void*, uint32_t&) noexcept;
++    bool (*write_bar)(void*, uint32_t) noexcept;
++};
++
++enum class ProbeStatus { success, invalid_access, read_failed, disable_failed,
++                         probe_failed, restore_failed };
++struct ProbeValue final { uint32_t original; uint32_t mask; };
++
++// Caller serializes access to this function's PCI configuration registers.
++// The borrowed callback context remains valid until return. Both decode bits
++// are disabled and read back before the sizing write. A failed BAR restore
++// leaves decoding disabled; failure never publishes a partially read result.
++ProbeStatus probe_bar(ProbeAccess access, ProbeValue& output) noexcept;
++
++constexpr uint32_t bar_capacity = 6;
++struct BarRange final {
++    uint64_t base;
++    uint64_t length;
++    uint64_t maximum_address;
++    uint32_t flags;
++    uint8_t first_bar;
++};
++
++struct BarSnapshot final {
++    BarRange ranges[bar_capacity]{};
++    uint32_t count = 0;
++};
++
++struct SnapshotAccess final {
++    void* context;
++    ProbeStatus (*probe)(void*, uint32_t bar, ProbeValue&) noexcept;
++};
++
++enum class SnapshotStatus {
++    success,
++    invalid_access,
++    unsupported_header,
++    probe_failed,
++    invalid_bar,
++    length_unrepresentable,
++    address_overflow
++};
++
++// One immutable capture supplies both descriptor counting and filling. Caller
++// holds config serialization across header acquisition and this entire call.
++// Type0 has six BARs, type1 two; other headers are explicitly unsupported. Each
++// DWORD is probed once. Failure leaves output unchanged, never a partial prefix.
++// CM/IO descriptors here have only 32-bit Length/Alignment; larger regions fail
++// rather than truncating into a different resource. CM MemoryLarge is not added.
++SnapshotStatus capture_bars(SnapshotAccess access, uint8_t header_type,
++                            BarSnapshot& output) noexcept;
++
++} // namespace pci
+diff --git a/drivers/bus/pci/fdo.c b/drivers/bus/pci/fdo.c
+index 879fbd7..e77a52e 100644
+--- a/drivers/bus/pci/fdo.c
++++ b/drivers/bus/pci/fdo.c
+@@ -8,6 +8,7 @@
+  */
+ 
+ #include "pci.h"
++#include "bar_probe.h"
+ 
+ #define NDEBUG
+ #include <debug.h>
+@@ -110,10 +111,10 @@ FdoEnumerateDevices(
+             RtlZeroMemory(&PciConfig,
+                           sizeof(PCI_COMMON_CONFIG));
+ 
+-            Size = HalGetBusData(PCIConfiguration,
+-                                 DeviceExtension->BusNumber,
++            Size = PciReadConfig(DeviceExtension->BusNumber,
+                                  SlotNumber.u.AsULONG,
+                                  &PciConfig,
++                                 0,
+                                  PCI_COMMON_HDR_LENGTH);
+             DPRINT("Size %lu\n", Size);
+             if (Size != PCI_COMMON_HDR_LENGTH ||
+diff --git a/drivers/bus/pci/pci.c b/drivers/bus/pci/pci.c
+index b85eeaf..6201583 100644
+--- a/drivers/bus/pci/pci.c
++++ b/drivers/bus/pci/pci.c
+@@ -8,6 +8,7 @@
+  */
+ 
+ #include "pci.h"
++#include "bar_probe.h"
+ 
+ #include <stdio.h>
+ 
+@@ -255,6 +256,7 @@ DriverEntry(
+ 
+     UNREFERENCED_PARAMETER(RegistryPath);
+     DPRINT("Peripheral Component Interconnect Bus Driver\n");
++    PciInitializeConfigAccess();
+ 
+     DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = PciDispatchDeviceControl;
+     DriverObject->MajorFunction[IRP_MJ_PNP] = PciPnpControl;
+diff --git a/drivers/bus/pci/pdo.c b/drivers/bus/pci/pdo.c
+index 5c045a1..1c5861c 100644
+--- a/drivers/bus/pci/pdo.c
++++ b/drivers/bus/pci/pdo.c
+@@ -8,6 +8,7 @@
+  */
+ 
+ #include "pci.h"
++#include "bar_probe.h"
+ 
+ #include <initguid.h>
+ #include <wdmguid.h>
+@@ -194,761 +195,26 @@ PdoQueryCapabilities(
+     return STATUS_SUCCESS;
+ }
+ 
+-static BOOLEAN
+-PdoReadPciBar(PPDO_DEVICE_EXTENSION DeviceExtension,
+-              ULONG Offset,
+-              PULONG OriginalValue,
+-              PULONG NewValue)
+-{
+-    ULONG Size;
+-    ULONG AllOnes;
+-
+-    /* Read the original value */
+-    Size = HalGetBusDataByOffset(PCIConfiguration,
+-                                 DeviceExtension->PciDevice->BusNumber,
+-                                 DeviceExtension->PciDevice->SlotNumber.u.AsULONG,
+-                                 OriginalValue,
+-                                 Offset,
+-                                 sizeof(ULONG));
+-    if (Size != sizeof(ULONG))
+-    {
+-        DPRINT1("Wrong size %lu\n", Size);
+-        return FALSE;
+-    }
+-
+-    /* Write all ones to determine which bits are held to zero */
+-    AllOnes = MAXULONG;
+-    Size = HalSetBusDataByOffset(PCIConfiguration,
+-                                 DeviceExtension->PciDevice->BusNumber,
+-                                 DeviceExtension->PciDevice->SlotNumber.u.AsULONG,
+-                                 &AllOnes,
+-                                 Offset,
+-                                 sizeof(ULONG));
+-    if (Size != sizeof(ULONG))
+-    {
+-        DPRINT1("Wrong size %lu\n", Size);
+-        return FALSE;
+-    }
+-
+-    /* Get the range length */
+-    Size = HalGetBusDataByOffset(PCIConfiguration,
+-                                 DeviceExtension->PciDevice->BusNumber,
+-                                 DeviceExtension->PciDevice->SlotNumber.u.AsULONG,
+-                                 NewValue,
+-                                 Offset,
+-                                 sizeof(ULONG));
+-    if (Size != sizeof(ULONG))
+-    {
+-        DPRINT1("Wrong size %lu\n", Size);
+-        return FALSE;
+-    }
+-
+-    /* Restore original value */
+-    Size = HalSetBusDataByOffset(PCIConfiguration,
+-                                 DeviceExtension->PciDevice->BusNumber,
+-                                 DeviceExtension->PciDevice->SlotNumber.u.AsULONG,
+-                                 OriginalValue,
+-                                 Offset,
+-                                 sizeof(ULONG));
+-    if (Size != sizeof(ULONG))
+-    {
+-        DPRINT1("Wrong size %lu\n", Size);
+-        return FALSE;
+-    }
+-
+-    return TRUE;
+-}
+-
+-static BOOLEAN
+-PdoGetRangeLength(PPDO_DEVICE_EXTENSION DeviceExtension,
+-                  UCHAR Bar,
+-                  PULONGLONG Base,
+-                  PULONGLONG Length,
+-                  PULONG Flags,
+-                  PUCHAR NextBar,
+-                  PULONGLONG MaximumAddress)
+-{
+-    union {
+-        struct {
+-            ULONG Bar0;
+-            ULONG Bar1;
+-        } Bars;
+-        ULONGLONG Bar;
+-    } OriginalValue;
+-    union {
+-        struct {
+-            ULONG Bar0;
+-            ULONG Bar1;
+-        } Bars;
+-        ULONGLONG Bar;
+-    } NewValue;
+-    ULONG Offset;
+-    ULONGLONG Size;
+-
+-    /* Compute the offset of this BAR in PCI config space */
+-    Offset = 0x10 + Bar * 4;
+-
+-    /* Assume this is a 32-bit BAR until we find wrong */
+-    *NextBar = Bar + 1;
+-
+-    /* Initialize BAR values to zero */
+-    OriginalValue.Bar = 0ULL;
+-    NewValue.Bar = 0ULL;
+-
+-    /* Read the first BAR */
+-    if (!PdoReadPciBar(DeviceExtension, Offset,
+-                       &OriginalValue.Bars.Bar0,
+-                       &NewValue.Bars.Bar0))
+-    {
+-        return FALSE;
+-    }
+-
+-    /* Check if this is a memory BAR */
+-    if (!(OriginalValue.Bars.Bar0 & PCI_ADDRESS_IO_SPACE))
+-    {
+-        /* Write the maximum address if the caller asked for it */
+-        if (MaximumAddress != NULL)
+-        {
+-            if ((OriginalValue.Bars.Bar0 & PCI_ADDRESS_MEMORY_TYPE_MASK) == PCI_TYPE_32BIT)
+-            {
+-                *MaximumAddress = 0x00000000FFFFFFFFULL;
+-            }
+-            else if ((OriginalValue.Bars.Bar0 & PCI_ADDRESS_MEMORY_TYPE_MASK) == PCI_TYPE_20BIT)
+-            {
+-                *MaximumAddress = 0x00000000000FFFFFULL;
+-            }
+-            else if ((OriginalValue.Bars.Bar0 & PCI_ADDRESS_MEMORY_TYPE_MASK) == PCI_TYPE_64BIT)
+-            {
+-                *MaximumAddress = 0xFFFFFFFFFFFFFFFFULL;
+-            }
+-        }
+-
+-        /* Check if this is a 64-bit BAR */
+-        if ((OriginalValue.Bars.Bar0 & PCI_ADDRESS_MEMORY_TYPE_MASK) == PCI_TYPE_64BIT)
+-        {
+-            /* We've now consumed the next BAR too */
+-            *NextBar = Bar + 2;
+-
+-            /* Read the next BAR */
+-            if (!PdoReadPciBar(DeviceExtension, Offset + 4,
+-                               &OriginalValue.Bars.Bar1,
+-                               &NewValue.Bars.Bar1))
+-            {
+-                return FALSE;
+-            }
+-        }
+-    }
+-    else
+-    {
+-        /* Write the maximum I/O port address */
+-        if (MaximumAddress != NULL)
+-        {
+-            *MaximumAddress = 0x00000000FFFFFFFFULL;
+-        }
+-    }
+-
+-    if (NewValue.Bar == 0)
+-    {
+-        DPRINT("Unused address register\n");
+-        *Base = 0;
+-        *Length = 0;
+-        *Flags = 0;
+-        return TRUE;
+-    }
+-
+-    *Base = ((OriginalValue.Bar & PCI_ADDRESS_IO_SPACE)
+-             ? (OriginalValue.Bar & PCI_ADDRESS_IO_ADDRESS_MASK_64)
+-             : (OriginalValue.Bar & PCI_ADDRESS_MEMORY_ADDRESS_MASK_64));
+-
+-    Size = (NewValue.Bar & PCI_ADDRESS_IO_SPACE)
+-           ? (NewValue.Bar & PCI_ADDRESS_IO_ADDRESS_MASK_64)
+-           : (NewValue.Bar & PCI_ADDRESS_MEMORY_ADDRESS_MASK_64);
+-    *Length = Size & ~(Size - 1);
+-
+-    *Flags = (NewValue.Bar & PCI_ADDRESS_IO_SPACE)
+-             ? (NewValue.Bar & ~PCI_ADDRESS_IO_ADDRESS_MASK_64)
+-             : (NewValue.Bar & ~PCI_ADDRESS_MEMORY_ADDRESS_MASK_64);
+-
+-    return TRUE;
+-}
+-
+-
+ static NTSTATUS
+ PdoQueryResourceRequirements(
+     IN PDEVICE_OBJECT DeviceObject,
+     IN PIRP Irp,
+     PIO_STACK_LOCATION IrpSp)
+ {
+-    PPDO_DEVICE_EXTENSION DeviceExtension;
+-    PCI_COMMON_CONFIG PciConfig;
+-    PIO_RESOURCE_REQUIREMENTS_LIST ResourceList;
+-    PIO_RESOURCE_DESCRIPTOR Descriptor;
+-    ULONG Size;
+-    ULONG ResCount = 0;
+-    ULONG ListSize;
+-    UCHAR Bar;
+-    ULONGLONG Base;
+-    ULONGLONG Length;
+-    ULONG Flags;
+-    ULONGLONG MaximumAddress;
+-
+     UNREFERENCED_PARAMETER(IrpSp);
+-    DPRINT("PdoQueryResourceRequirements() called\n");
+-
+-    DeviceExtension = (PPDO_DEVICE_EXTENSION)DeviceObject->DeviceExtension;
+-
+-    /* Get PCI configuration space */
+-    Size= HalGetBusData(PCIConfiguration,
+-                        DeviceExtension->PciDevice->BusNumber,
+-                        DeviceExtension->PciDevice->SlotNumber.u.AsULONG,
+-                        &PciConfig,
+-                        PCI_COMMON_HDR_LENGTH);
+-    DPRINT("Size %lu\n", Size);
+-    if (Size < PCI_COMMON_HDR_LENGTH)
+-    {
+-        Irp->IoStatus.Information = 0;
+-        return STATUS_UNSUCCESSFUL;
+-    }
+-
+-    DPRINT("Command register: 0x%04hx\n", PciConfig.Command);
+-
+-    /* Count required resource descriptors */
+-    ResCount = 0;
+-    if (PCI_CONFIGURATION_TYPE(&PciConfig) == PCI_DEVICE_TYPE)
+-    {
+-        for (Bar = 0; Bar < PCI_TYPE0_ADDRESSES;)
+-        {
+-            if (!PdoGetRangeLength(DeviceExtension,
+-                                   Bar,
+-                                   &Base,
+-                                   &Length,
+-                                   &Flags,
+-                                   &Bar,
+-                                   NULL))
+-                break;
+-
+-            if (Length != 0)
+-                ResCount += 2;
+-        }
+-
+-        /* FIXME: Check ROM address */
+-
+-        if (PciConfig.u.type0.InterruptPin != 0)
+-            ResCount++;
+-    }
+-    else if (PCI_CONFIGURATION_TYPE(&PciConfig) == PCI_BRIDGE_TYPE)
+-    {
+-        for (Bar = 0; Bar < PCI_TYPE1_ADDRESSES;)
+-        {
+-            if (!PdoGetRangeLength(DeviceExtension,
+-                                   Bar,
+-                                   &Base,
+-                                   &Length,
+-                                   &Flags,
+-                                   &Bar,
+-                                   NULL))
+-                break;
+-
+-            if (Length != 0)
+-                ResCount += 2;
+-        }
+-
+-        if (DeviceExtension->PciDevice->PciConfig.BaseClass == PCI_CLASS_BRIDGE_DEV)
+-            ResCount++;
+-    }
+-    else if (PCI_CONFIGURATION_TYPE(&PciConfig) == PCI_CARDBUS_BRIDGE_TYPE)
+-    {
+-        /* FIXME: Count Cardbus bridge resources */
+-    }
+-    else
+-    {
+-        DPRINT1("Unsupported header type %d\n", PCI_CONFIGURATION_TYPE(&PciConfig));
+-    }
+-
+-    if (ResCount == 0)
+-    {
+-        Irp->IoStatus.Information = 0;
+-        return STATUS_SUCCESS;
+-    }
+-
+-    /* Calculate the resource list size */
+-    ListSize = FIELD_OFFSET(IO_RESOURCE_REQUIREMENTS_LIST, List[0].Descriptors) +
+-               ResCount * sizeof(IO_RESOURCE_DESCRIPTOR);
+-
+-    DPRINT("ListSize %lu (0x%lx)\n", ListSize, ListSize);
+-
+-    /* Allocate the resource requirements list */
+-    ResourceList = ExAllocatePoolWithTag(PagedPool,
+-                                         ListSize,
+-                                         TAG_PCI);
+-    if (ResourceList == NULL)
+-    {
+-        Irp->IoStatus.Information = 0;
+-        return STATUS_INSUFFICIENT_RESOURCES;
+-    }
+-
+-    RtlZeroMemory(ResourceList, ListSize);
+-    ResourceList->ListSize = ListSize;
+-    ResourceList->InterfaceType = PCIBus;
+-    ResourceList->BusNumber = DeviceExtension->PciDevice->BusNumber;
+-    ResourceList->SlotNumber = DeviceExtension->PciDevice->SlotNumber.u.AsULONG;
+-    ResourceList->AlternativeLists = 1;
+-
+-    ResourceList->List[0].Version = 1;
+-    ResourceList->List[0].Revision = 1;
+-    ResourceList->List[0].Count = ResCount;
+-
+-    Descriptor = &ResourceList->List[0].Descriptors[0];
+-    if (PCI_CONFIGURATION_TYPE(&PciConfig) == PCI_DEVICE_TYPE)
+-    {
+-        for (Bar = 0; Bar < PCI_TYPE0_ADDRESSES;)
+-        {
+-            if (!PdoGetRangeLength(DeviceExtension,
+-                                   Bar,
+-                                   &Base,
+-                                   &Length,
+-                                   &Flags,
+-                                   &Bar,
+-                                   &MaximumAddress))
+-            {
+-                DPRINT1("PdoGetRangeLength() failed\n");
+-                break;
+-            }
+-
+-            if (Length == 0)
+-            {
+-                DPRINT("Unused address register\n");
+-                continue;
+-            }
+-
+-            /* Set preferred descriptor */
+-            Descriptor->Option = IO_RESOURCE_PREFERRED;
+-            if (Flags & PCI_ADDRESS_IO_SPACE)
+-            {
+-                Descriptor->Type = CmResourceTypePort;
+-                Descriptor->ShareDisposition = CmResourceShareDeviceExclusive;
+-                Descriptor->Flags = CM_RESOURCE_PORT_IO |
+-                                    CM_RESOURCE_PORT_16_BIT_DECODE |
+-                                    CM_RESOURCE_PORT_POSITIVE_DECODE;
+-
+-                Descriptor->u.Port.Length = Length;
+-                Descriptor->u.Port.Alignment = 1;
+-                Descriptor->u.Port.MinimumAddress.QuadPart = Base;
+-                Descriptor->u.Port.MaximumAddress.QuadPart = Base + Length - 1;
+-            }
+-            else
+-            {
+-                Descriptor->Type = CmResourceTypeMemory;
+-                Descriptor->ShareDisposition = CmResourceShareDeviceExclusive;
+-                Descriptor->Flags = CM_RESOURCE_MEMORY_READ_WRITE |
+-                    (Flags & PCI_ADDRESS_MEMORY_PREFETCHABLE) ? CM_RESOURCE_MEMORY_PREFETCHABLE : 0;
+-
+-                Descriptor->u.Memory.Length = Length;
+-                Descriptor->u.Memory.Alignment = 1;
+-                Descriptor->u.Memory.MinimumAddress.QuadPart = Base;
+-                Descriptor->u.Memory.MaximumAddress.QuadPart = Base + Length - 1;
+-            }
+-            Descriptor++;
+-
+-            /* Set alternative descriptor */
+-            Descriptor->Option = IO_RESOURCE_ALTERNATIVE;
+-            if (Flags & PCI_ADDRESS_IO_SPACE)
+-            {
+-                Descriptor->Type = CmResourceTypePort;
+-                Descriptor->ShareDisposition = CmResourceShareDeviceExclusive;
+-                Descriptor->Flags = CM_RESOURCE_PORT_IO |
+-                                    CM_RESOURCE_PORT_16_BIT_DECODE |
+-                                    CM_RESOURCE_PORT_POSITIVE_DECODE;
+-
+-                Descriptor->u.Port.Length = Length;
+-                Descriptor->u.Port.Alignment = Length;
+-                Descriptor->u.Port.MinimumAddress.QuadPart = 0;
+-                Descriptor->u.Port.MaximumAddress.QuadPart = MaximumAddress;
+-            }
+-            else
+-            {
+-                Descriptor->Type = CmResourceTypeMemory;
+-                Descriptor->ShareDisposition = CmResourceShareDeviceExclusive;
+-                Descriptor->Flags = CM_RESOURCE_MEMORY_READ_WRITE |
+-                    (Flags & PCI_ADDRESS_MEMORY_PREFETCHABLE) ? CM_RESOURCE_MEMORY_PREFETCHABLE : 0;
+-
+-                Descriptor->u.Memory.Length = Length;
+-                Descriptor->u.Memory.Alignment = Length;
+-                Descriptor->u.Port.MinimumAddress.QuadPart = 0;
+-                Descriptor->u.Port.MaximumAddress.QuadPart = MaximumAddress;
+-            }
+-            Descriptor++;
+-        }
+-
+-        /* FIXME: Check ROM address */
+-
+-        if (PciConfig.u.type0.InterruptPin != 0)
+-        {
+-            Descriptor->Option = 0; /* Required */
+-            Descriptor->Type = CmResourceTypeInterrupt;
+-            Descriptor->ShareDisposition = CmResourceShareShared;
+-            Descriptor->Flags = CM_RESOURCE_INTERRUPT_LEVEL_SENSITIVE;
+-
+-            Descriptor->u.Interrupt.MinimumVector = 0;
+-            Descriptor->u.Interrupt.MaximumVector = 0xFF;
+-        }
+-    }
+-    else if (PCI_CONFIGURATION_TYPE(&PciConfig) == PCI_BRIDGE_TYPE)
+-    {
+-        for (Bar = 0; Bar < PCI_TYPE1_ADDRESSES;)
+-        {
+-            if (!PdoGetRangeLength(DeviceExtension,
+-                                   Bar,
+-                                   &Base,
+-                                   &Length,
+-                                   &Flags,
+-                                   &Bar,
+-                                   &MaximumAddress))
+-            {
+-                DPRINT1("PdoGetRangeLength() failed\n");
+-                break;
+-            }
+-
+-            if (Length == 0)
+-            {
+-                DPRINT("Unused address register\n");
+-                continue;
+-            }
+-
+-            /* Set preferred descriptor */
+-            Descriptor->Option = IO_RESOURCE_PREFERRED;
+-            if (Flags & PCI_ADDRESS_IO_SPACE)
+-            {
+-                Descriptor->Type = CmResourceTypePort;
+-                Descriptor->ShareDisposition = CmResourceShareDeviceExclusive;
+-                Descriptor->Flags = CM_RESOURCE_PORT_IO |
+-                                    CM_RESOURCE_PORT_16_BIT_DECODE |
+-                                    CM_RESOURCE_PORT_POSITIVE_DECODE;
+-
+-                Descriptor->u.Port.Length = Length;
+-                Descriptor->u.Port.Alignment = 1;
+-                Descriptor->u.Port.MinimumAddress.QuadPart = Base;
+-                Descriptor->u.Port.MaximumAddress.QuadPart = Base + Length - 1;
+-            }
+-            else
+-            {
+-                Descriptor->Type = CmResourceTypeMemory;
+-                Descriptor->ShareDisposition = CmResourceShareDeviceExclusive;
+-                Descriptor->Flags = CM_RESOURCE_MEMORY_READ_WRITE |
+-                    (Flags & PCI_ADDRESS_MEMORY_PREFETCHABLE) ? CM_RESOURCE_MEMORY_PREFETCHABLE : 0;
+-
+-                Descriptor->u.Memory.Length = Length;
+-                Descriptor->u.Memory.Alignment = 1;
+-                Descriptor->u.Memory.MinimumAddress.QuadPart = Base;
+-                Descriptor->u.Memory.MaximumAddress.QuadPart = Base + Length - 1;
+-            }
+-            Descriptor++;
+-
+-            /* Set alternative descriptor */
+-            Descriptor->Option = IO_RESOURCE_ALTERNATIVE;
+-            if (Flags & PCI_ADDRESS_IO_SPACE)
+-            {
+-                Descriptor->Type = CmResourceTypePort;
+-                Descriptor->ShareDisposition = CmResourceShareDeviceExclusive;
+-                Descriptor->Flags = CM_RESOURCE_PORT_IO |
+-                                    CM_RESOURCE_PORT_16_BIT_DECODE |
+-                                    CM_RESOURCE_PORT_POSITIVE_DECODE;
+-
+-                Descriptor->u.Port.Length = Length;
+-                Descriptor->u.Port.Alignment = Length;
+-                Descriptor->u.Port.MinimumAddress.QuadPart = 0;
+-                Descriptor->u.Port.MaximumAddress.QuadPart = MaximumAddress;
+-            }
+-            else
+-            {
+-                Descriptor->Type = CmResourceTypeMemory;
+-                Descriptor->ShareDisposition = CmResourceShareDeviceExclusive;
+-                Descriptor->Flags = CM_RESOURCE_MEMORY_READ_WRITE |
+-                    (Flags & PCI_ADDRESS_MEMORY_PREFETCHABLE) ? CM_RESOURCE_MEMORY_PREFETCHABLE : 0;
+-
+-                Descriptor->u.Memory.Length = Length;
+-                Descriptor->u.Memory.Alignment = Length;
+-                Descriptor->u.Port.MinimumAddress.QuadPart = 0;
+-                Descriptor->u.Port.MaximumAddress.QuadPart = MaximumAddress;
+-            }
+-            Descriptor++;
+-        }
+-
+-        if (DeviceExtension->PciDevice->PciConfig.BaseClass == PCI_CLASS_BRIDGE_DEV)
+-        {
+-            Descriptor->Option = 0; /* Required */
+-            Descriptor->Type = CmResourceTypeBusNumber;
+-            Descriptor->ShareDisposition = CmResourceShareDeviceExclusive;
+-
+-            ResourceList->BusNumber =
+-            Descriptor->u.BusNumber.MinBusNumber =
+-            Descriptor->u.BusNumber.MaxBusNumber = DeviceExtension->PciDevice->PciConfig.u.type1.SecondaryBus;
+-            Descriptor->u.BusNumber.Length = 1;
+-            Descriptor->u.BusNumber.Reserved = 0;
+-        }
+-    }
+-    else if (PCI_CONFIGURATION_TYPE(&PciConfig) == PCI_CARDBUS_BRIDGE_TYPE)
+-    {
+-        /* FIXME: Add Cardbus bridge resources */
+-    }
+-
+-    Irp->IoStatus.Information = (ULONG_PTR)ResourceList;
+-
+-    return STATUS_SUCCESS;
++    return PciQueryResourceRequirements(DeviceObject->DeviceExtension,
++                                        &Irp->IoStatus.Information);
+ }
+ 
+-
+ static NTSTATUS
+ PdoQueryResources(
+     IN PDEVICE_OBJECT DeviceObject,
+     IN PIRP Irp,
+     PIO_STACK_LOCATION IrpSp)
+ {
+-    PPDO_DEVICE_EXTENSION DeviceExtension;
+-    PCI_COMMON_CONFIG PciConfig;
+-    PCM_RESOURCE_LIST ResourceList;
+-    PCM_PARTIAL_RESOURCE_LIST PartialList;
+-    PCM_PARTIAL_RESOURCE_DESCRIPTOR Descriptor;
+-    ULONG Size;
+-    ULONG ResCount = 0;
+-    ULONG ListSize;
+-    UCHAR Bar;
+-    ULONGLONG Base;
+-    ULONGLONG Length;
+-    ULONG Flags;
+-
+-    DPRINT("PdoQueryResources() called\n");
+-
+     UNREFERENCED_PARAMETER(IrpSp);
+-    DeviceExtension = (PPDO_DEVICE_EXTENSION)DeviceObject->DeviceExtension;
+-
+-    /* Get PCI configuration space */
+-    Size= HalGetBusData(PCIConfiguration,
+-                        DeviceExtension->PciDevice->BusNumber,
+-                        DeviceExtension->PciDevice->SlotNumber.u.AsULONG,
+-                        &PciConfig,
+-                        PCI_COMMON_HDR_LENGTH);
+-    DPRINT("Size %lu\n", Size);
+-    if (Size < PCI_COMMON_HDR_LENGTH)
+-    {
+-        Irp->IoStatus.Information = 0;
+-        return STATUS_UNSUCCESSFUL;
+-    }
+-
+-    DPRINT("Command register: 0x%04hx\n", PciConfig.Command);
+-
+-    /* Count required resource descriptors */
+-    ResCount = 0;
+-    if (PCI_CONFIGURATION_TYPE(&PciConfig) == PCI_DEVICE_TYPE)
+-    {
+-        for (Bar = 0; Bar < PCI_TYPE0_ADDRESSES;)
+-        {
+-            if (!PdoGetRangeLength(DeviceExtension,
+-                                   Bar,
+-                                   &Base,
+-                                   &Length,
+-                                   &Flags,
+-                                   &Bar,
+-                                   NULL))
+-                break;
+-
+-            if (Length)
+-                ResCount++;
+-        }
+-
+-        if ((PciConfig.u.type0.InterruptPin != 0) &&
+-            (PciConfig.u.type0.InterruptLine != 0) &&
+-            (PciConfig.u.type0.InterruptLine != 0xFF))
+-            ResCount++;
+-    }
+-    else if (PCI_CONFIGURATION_TYPE(&PciConfig) == PCI_BRIDGE_TYPE)
+-    {
+-        for (Bar = 0; Bar < PCI_TYPE1_ADDRESSES;)
+-        {
+-            if (!PdoGetRangeLength(DeviceExtension,
+-                                   Bar,
+-                                   &Base,
+-                                   &Length,
+-                                   &Flags,
+-                                   &Bar,
+-                                   NULL))
+-                break;
+-
+-            if (Length != 0)
+-                ResCount++;
+-        }
+-
+-        if (DeviceExtension->PciDevice->PciConfig.BaseClass == PCI_CLASS_BRIDGE_DEV)
+-            ResCount++;
+-    }
+-    else if (PCI_CONFIGURATION_TYPE(&PciConfig) == PCI_CARDBUS_BRIDGE_TYPE)
+-    {
+-        /* FIXME: Count Cardbus bridge resources */
+-    }
+-    else
+-    {
+-        DPRINT1("Unsupported header type %d\n", PCI_CONFIGURATION_TYPE(&PciConfig));
+-    }
+-
+-    if (ResCount == 0)
+-    {
+-        Irp->IoStatus.Information = 0;
+-        return STATUS_SUCCESS;
+-    }
+-
+-    /* Calculate the resource list size */
+-    ListSize = FIELD_OFFSET(CM_RESOURCE_LIST, List[0].PartialResourceList.PartialDescriptors) +
+-               ResCount * sizeof(CM_PARTIAL_RESOURCE_DESCRIPTOR);
+-
+-    /* Allocate the resource list */
+-    ResourceList = ExAllocatePoolWithTag(PagedPool,
+-                                         ListSize,
+-                                         TAG_PCI);
+-    if (ResourceList == NULL)
+-        return STATUS_INSUFFICIENT_RESOURCES;
+-
+-    RtlZeroMemory(ResourceList, ListSize);
+-    ResourceList->Count = 1;
+-    ResourceList->List[0].InterfaceType = PCIBus;
+-    ResourceList->List[0].BusNumber = DeviceExtension->PciDevice->BusNumber;
+-
+-    PartialList = &ResourceList->List[0].PartialResourceList;
+-    PartialList->Version = 1;
+-    PartialList->Revision = 1;
+-    PartialList->Count = ResCount;
+-
+-    Descriptor = &PartialList->PartialDescriptors[0];
+-    if (PCI_CONFIGURATION_TYPE(&PciConfig) == PCI_DEVICE_TYPE)
+-    {
+-        for (Bar = 0; Bar < PCI_TYPE0_ADDRESSES;)
+-        {
+-            if (!PdoGetRangeLength(DeviceExtension,
+-                                   Bar,
+-                                   &Base,
+-                                   &Length,
+-                                   &Flags,
+-                                   &Bar,
+-                                   NULL))
+-                break;
+-
+-            if (Length == 0)
+-            {
+-                DPRINT("Unused address register\n");
+-                continue;
+-            }
+-
+-            if (Flags & PCI_ADDRESS_IO_SPACE)
+-            {
+-                Descriptor->Type = CmResourceTypePort;
+-                Descriptor->ShareDisposition = CmResourceShareDeviceExclusive;
+-                Descriptor->Flags = CM_RESOURCE_PORT_IO |
+-                                    CM_RESOURCE_PORT_16_BIT_DECODE |
+-                                    CM_RESOURCE_PORT_POSITIVE_DECODE;
+-                Descriptor->u.Port.Start.QuadPart = (ULONGLONG)Base;
+-                Descriptor->u.Port.Length = Length;
+-
+-                /* Enable IO space access */
+-                DeviceExtension->PciDevice->EnableIoSpace = TRUE;
+-            }
+-            else
+-            {
+-                Descriptor->Type = CmResourceTypeMemory;
+-                Descriptor->ShareDisposition = CmResourceShareDeviceExclusive;
+-                Descriptor->Flags = CM_RESOURCE_MEMORY_READ_WRITE |
+-                    (Flags & PCI_ADDRESS_MEMORY_PREFETCHABLE) ? CM_RESOURCE_MEMORY_PREFETCHABLE : 0;
+-                Descriptor->u.Memory.Start.QuadPart = (ULONGLONG)Base;
+-                Descriptor->u.Memory.Length = Length;
+-
+-                /* Enable memory space access */
+-                DeviceExtension->PciDevice->EnableMemorySpace = TRUE;
+-            }
+-
+-            Descriptor++;
+-        }
+-
+-        /* Add interrupt resource */
+-        if ((PciConfig.u.type0.InterruptPin != 0) &&
+-            (PciConfig.u.type0.InterruptLine != 0) &&
+-            (PciConfig.u.type0.InterruptLine != 0xFF))
+-        {
+-            Descriptor->Type = CmResourceTypeInterrupt;
+-            Descriptor->ShareDisposition = CmResourceShareShared;
+-            Descriptor->Flags = CM_RESOURCE_INTERRUPT_LEVEL_SENSITIVE;
+-            Descriptor->u.Interrupt.Level = PciConfig.u.type0.InterruptLine;
+-            Descriptor->u.Interrupt.Vector = PciConfig.u.type0.InterruptLine;
+-            Descriptor->u.Interrupt.Affinity = 0xFFFFFFFF;
+-        }
+-
+-        /* Allow bus master mode */
+-       DeviceExtension->PciDevice->EnableBusMaster = TRUE;
+-    }
+-    else if (PCI_CONFIGURATION_TYPE(&PciConfig) == PCI_BRIDGE_TYPE)
+-    {
+-        for (Bar = 0; Bar < PCI_TYPE1_ADDRESSES;)
+-        {
+-            if (!PdoGetRangeLength(DeviceExtension,
+-                                   Bar,
+-                                   &Base,
+-                                   &Length,
+-                                   &Flags,
+-                                   &Bar,
+-                                   NULL))
+-                break;
+-
+-            if (Length == 0)
+-            {
+-                DPRINT("Unused address register\n");
+-                continue;
+-            }
+-
+-            if (Flags & PCI_ADDRESS_IO_SPACE)
+-            {
+-                Descriptor->Type = CmResourceTypePort;
+-                Descriptor->ShareDisposition = CmResourceShareDeviceExclusive;
+-                Descriptor->Flags = CM_RESOURCE_PORT_IO |
+-                                    CM_RESOURCE_PORT_16_BIT_DECODE |
+-                                    CM_RESOURCE_PORT_POSITIVE_DECODE;
+-                Descriptor->u.Port.Start.QuadPart = (ULONGLONG)Base;
+-                Descriptor->u.Port.Length = Length;
+-
+-                /* Enable IO space access */
+-                DeviceExtension->PciDevice->EnableIoSpace = TRUE;
+-            }
+-            else
+-            {
+-                Descriptor->Type = CmResourceTypeMemory;
+-                Descriptor->ShareDisposition = CmResourceShareDeviceExclusive;
+-                Descriptor->Flags = CM_RESOURCE_MEMORY_READ_WRITE |
+-                    (Flags & PCI_ADDRESS_MEMORY_PREFETCHABLE) ? CM_RESOURCE_MEMORY_PREFETCHABLE : 0;
+-                Descriptor->u.Memory.Start.QuadPart = (ULONGLONG)Base;
+-                Descriptor->u.Memory.Length = Length;
+-
+-                /* Enable memory space access */
+-                DeviceExtension->PciDevice->EnableMemorySpace = TRUE;
+-            }
+-
+-            Descriptor++;
+-        }
+-
+-        if (DeviceExtension->PciDevice->PciConfig.BaseClass == PCI_CLASS_BRIDGE_DEV)
+-        {
+-            Descriptor->Type = CmResourceTypeBusNumber;
+-            Descriptor->ShareDisposition = CmResourceShareDeviceExclusive;
+-
+-            ResourceList->List[0].BusNumber =
+-            Descriptor->u.BusNumber.Start = DeviceExtension->PciDevice->PciConfig.u.type1.SecondaryBus;
+-            Descriptor->u.BusNumber.Length = 1;
+-            Descriptor->u.BusNumber.Reserved = 0;
+-        }
+-    }
+-    else if (PCI_CONFIGURATION_TYPE(&PciConfig) == PCI_CARDBUS_BRIDGE_TYPE)
+-    {
+-        /* FIXME: Add Cardbus bridge resources */
+-    }
+-
+-    Irp->IoStatus.Information = (ULONG_PTR)ResourceList;
+-
+-    return STATUS_SUCCESS;
++    return PciQueryResources(DeviceObject->DeviceExtension,
++                             &Irp->IoStatus.Information);
+ }
+ 
+ 
+@@ -1045,8 +311,7 @@ InterfaceBusSetBusData(
+     DeviceExtension = (PPDO_DEVICE_EXTENSION)((PDEVICE_OBJECT)Context)->DeviceExtension;
+ 
+     /* Get PCI configuration space */
+-    Size = HalSetBusDataByOffset(PCIConfiguration,
+-                                 DeviceExtension->PciDevice->BusNumber,
++    Size = PciWriteConfig(DeviceExtension->PciDevice->BusNumber,
+                                  DeviceExtension->PciDevice->SlotNumber.u.AsULONG,
+                                  Buffer,
+                                  Offset,
+@@ -1081,8 +346,7 @@ InterfaceBusGetBusData(
+     DeviceExtension = (PPDO_DEVICE_EXTENSION)((PDEVICE_OBJECT)Context)->DeviceExtension;
+ 
+     /* Get PCI configuration space */
+-    Size = HalGetBusDataByOffset(PCIConfiguration,
+-                                 DeviceExtension->PciDevice->BusNumber,
++    Size = PciReadConfig(DeviceExtension->PciDevice->BusNumber,
+                                  DeviceExtension->PciDevice->SlotNumber.u.AsULONG,
+                                  Buffer,
+                                  Offset,
+@@ -1354,8 +618,7 @@ PdoStartDevice(
+                         DeviceExtension->PciDevice->BusNumber);
+ 
+                 Irq = (UCHAR)RawPartialDesc->u.Interrupt.Vector;
+-                HalSetBusDataByOffset(PCIConfiguration,
+-                                      DeviceExtension->PciDevice->BusNumber,
++                PciWriteConfig(DeviceExtension->PciDevice->BusNumber,
+                                       DeviceExtension->PciDevice->SlotNumber.u.AsULONG,
+                                       &Irq,
+                                       0x3c /* PCI_INTERRUPT_LINE */,
+@@ -1394,8 +657,7 @@ PdoStartDevice(
+         /* OR with the previous value */
+         Command |= DeviceExtension->PciDevice->PciConfig.Command;
+ 
+-        HalSetBusDataByOffset(PCIConfiguration,
+-                              DeviceExtension->PciDevice->BusNumber,
++        PciWriteConfig(DeviceExtension->PciDevice->BusNumber,
+                               DeviceExtension->PciDevice->SlotNumber.u.AsULONG,
+                               &Command,
+                               FIELD_OFFSET(PCI_COMMON_CONFIG, Command),
+diff --git a/drivers/bus/pci/resource_snapshot.cpp b/drivers/bus/pci/resource_snapshot.cpp
+new file mode 100644
+index 0000000..900fdd6
+--- /dev/null
++++ b/drivers/bus/pci/resource_snapshot.cpp
+@@ -0,0 +1,248 @@
++/*
++Module: reactos.pci.resource_snapshot
++Purpose: Build PnP lists from one checked immutable BAR capture, without reprobes.
++Created: 2026-10-21
++Architecture: C++17 native resource ownership; BAR policy validates all narrowing.
++Adapted from ReactOS pdo.c by Casper S. Hornstrup, created 2001-10-09.
++License: ReactOS GPL; see COPYING in the ReactOS source root.
++*/
++#include "bar_probe_native.hpp"
++#include "bar_probe.h"
++
++namespace {
++
++class PoolOwner final {
++public:
++    explicit PoolOwner(ULONG bytes) noexcept
++        : pointer_(ExAllocatePoolWithTag(PagedPool, bytes, TAG_PCI)) {
++        if (pointer_ != nullptr) {
++            RtlZeroMemory(pointer_, bytes);
++        }
++    }
++    ~PoolOwner() {
++        if (pointer_ != nullptr) {
++            ExFreePoolWithTag(pointer_, TAG_PCI);
++        }
++    }
++    PoolOwner(const PoolOwner&) = delete;
++    PoolOwner& operator=(const PoolOwner&) = delete;
++    void* get() const noexcept { return pointer_; }
++    ULONG_PTR publish() noexcept {
++        const ULONG_PTR result = reinterpret_cast<ULONG_PTR>(pointer_);
++        pointer_ = nullptr;
++        return result;
++    }
++private:
++    void* pointer_;
++};
++
++USHORT memory_flags(const pci::BarRange& range) noexcept {
++    return static_cast<USHORT>(CM_RESOURCE_MEMORY_READ_WRITE |
++        ((range.flags & PCI_ADDRESS_MEMORY_PREFETCHABLE) != 0 ?
++            CM_RESOURCE_MEMORY_PREFETCHABLE : 0));
++}
++
++bool is_bridge(const pci::ResourceSnapshot& snapshot) noexcept {
++    return PCI_CONFIGURATION_TYPE(&snapshot.config) == PCI_BRIDGE_TYPE &&
++           snapshot.config.BaseClass == PCI_CLASS_BRIDGE_DEV;
++}
++
++bool has_interrupt(const pci::ResourceSnapshot& snapshot, bool requirements) noexcept {
++    return PCI_CONFIGURATION_TYPE(&snapshot.config) == PCI_DEVICE_TYPE &&
++           snapshot.config.u.type0.InterruptPin != 0 &&
++           (requirements || (snapshot.config.u.type0.InterruptLine != 0 &&
++                             snapshot.config.u.type0.InterruptLine != 0xff));
++}
++
++// Snapshot proves ULONG Length/Alignment and Base+Length-1 before allocation.
++// Both count and writes consume the exact same capture; there is no second I/O
++// pass that can discover more descriptors than the allocated output holds.
++void fill_requirement(IO_RESOURCE_DESCRIPTOR& descriptor, const pci::BarRange& range,
++                       bool alternative) noexcept {
++    descriptor.Option = alternative ? IO_RESOURCE_ALTERNATIVE : IO_RESOURCE_PREFERRED;
++    descriptor.ShareDisposition = CmResourceShareDeviceExclusive;
++    const ULONG length = static_cast<ULONG>(range.length);
++    const LONGLONG minimum = alternative ? 0 : static_cast<LONGLONG>(range.base);
++    const LONGLONG maximum = static_cast<LONGLONG>(alternative ? range.maximum_address :
++                                                   range.base + range.length - 1u);
++
++    if ((range.flags & PCI_ADDRESS_IO_SPACE) != 0) {
++        descriptor.Type = CmResourceTypePort;
++        descriptor.Flags = CM_RESOURCE_PORT_IO | CM_RESOURCE_PORT_16_BIT_DECODE |
++                           CM_RESOURCE_PORT_POSITIVE_DECODE;
++        descriptor.u.Port.Length = length;
++        descriptor.u.Port.Alignment = alternative ? length : 1;
++        descriptor.u.Port.MinimumAddress.QuadPart = minimum;
++        descriptor.u.Port.MaximumAddress.QuadPart = maximum;
++    } else {
++        descriptor.Type = CmResourceTypeMemory;
++        descriptor.Flags = memory_flags(range);
++        descriptor.u.Memory.Length = length;
++        descriptor.u.Memory.Alignment = alternative ? length : 1;
++        descriptor.u.Memory.MinimumAddress.QuadPart = minimum;
++        descriptor.u.Memory.MaximumAddress.QuadPart = maximum;
++    }
++}
++
++} // namespace
++
++// PnP/PASSIVE_LEVEL. Caller owns the PDO and writable Information field. These
++// routines return an owned paged-pool native list to PnP on success only. Failure
++// frees every allocation, publishes no list and changes no device-enable flags.
++extern "C" NTSTATUS NTAPI PciQueryResourceRequirements(PVOID extension,
++                                                       PULONG_PTR information) {
++    auto* device = static_cast<PPDO_DEVICE_EXTENSION>(extension);
++    *information = 0;
++    pci::ResourceSnapshot snapshot{};
++    const NTSTATUS status = pci::capture_resources(device, snapshot);
++
++    if (!NT_SUCCESS(status)) {
++        return status;
++    }
++
++    const bool irq = has_interrupt(snapshot, true);
++    const bool bridge = is_bridge(snapshot);
++    const ULONG count = snapshot.bars.count * 2u + (irq || bridge ? 1u : 0u);
++
++    if (count == 0) {
++        return STATUS_SUCCESS;
++    }
++
++    const ULONG bytes = FIELD_OFFSET(IO_RESOURCE_REQUIREMENTS_LIST, List[0].Descriptors) +
++                        count * static_cast<ULONG>(sizeof(IO_RESOURCE_DESCRIPTOR));
++    PoolOwner allocation(bytes);
++    auto* resources = static_cast<PIO_RESOURCE_REQUIREMENTS_LIST>(allocation.get());
++
++    if (resources == nullptr) {
++        return STATUS_INSUFFICIENT_RESOURCES;
++    }
++
++    resources->ListSize = bytes;
++    resources->InterfaceType = PCIBus;
++    resources->BusNumber = device->PciDevice->BusNumber;
++    resources->SlotNumber = device->PciDevice->SlotNumber.u.AsULONG;
++    resources->AlternativeLists = 1;
++    resources->List[0].Version = 1;
++    resources->List[0].Revision = 1;
++    resources->List[0].Count = count;
++    ULONG next = 0;
++
++    for (uint32_t index = 0; index < snapshot.bars.count; ++index) {
++        const auto& range = snapshot.bars.ranges[index];
++        fill_requirement(resources->List[0].Descriptors[next++], range, false);
++        fill_requirement(resources->List[0].Descriptors[next++], range, true);
++    }
++
++    if (irq) {
++        auto& descriptor = resources->List[0].Descriptors[next++];
++        descriptor.Type = CmResourceTypeInterrupt;
++        descriptor.ShareDisposition = CmResourceShareShared;
++        descriptor.Flags = CM_RESOURCE_INTERRUPT_LEVEL_SENSITIVE;
++        descriptor.u.Interrupt.MinimumVector = 0;
++        descriptor.u.Interrupt.MaximumVector = 0xff;
++    } else if (bridge) {
++        auto& descriptor = resources->List[0].Descriptors[next++];
++        descriptor.Type = CmResourceTypeBusNumber;
++        descriptor.ShareDisposition = CmResourceShareDeviceExclusive;
++        resources->BusNumber = snapshot.config.u.type1.SecondaryBus;
++        descriptor.u.BusNumber.MinBusNumber = snapshot.config.u.type1.SecondaryBus;
++        descriptor.u.BusNumber.MaxBusNumber = snapshot.config.u.type1.SecondaryBus;
++        descriptor.u.BusNumber.Length = 1;
++    }
++
++    if (next != count) {
++        return STATUS_INTERNAL_ERROR;
++    }
++
++    *information = allocation.publish();
++    return STATUS_SUCCESS;
++}
++
++extern "C" NTSTATUS NTAPI PciQueryResources(PVOID extension, PULONG_PTR information) {
++    auto* device = static_cast<PPDO_DEVICE_EXTENSION>(extension);
++    *information = 0;
++    pci::ResourceSnapshot snapshot{};
++    const NTSTATUS status = pci::capture_resources(device, snapshot);
++
++    if (!NT_SUCCESS(status)) {
++        return status;
++    }
++
++    const bool irq = has_interrupt(snapshot, false);
++    const bool bridge = is_bridge(snapshot);
++    const ULONG count = snapshot.bars.count + (irq || bridge ? 1u : 0u);
++
++    if (count == 0) {
++        return STATUS_SUCCESS;
++    }
++
++    const ULONG bytes = FIELD_OFFSET(CM_RESOURCE_LIST, List[0].PartialResourceList.PartialDescriptors) +
++                        count * static_cast<ULONG>(sizeof(CM_PARTIAL_RESOURCE_DESCRIPTOR));
++    PoolOwner allocation(bytes);
++    auto* resources = static_cast<PCM_RESOURCE_LIST>(allocation.get());
++
++    if (resources == nullptr) {
++        return STATUS_INSUFFICIENT_RESOURCES;
++    }
++
++    resources->Count = 1;
++    resources->List[0].InterfaceType = PCIBus;
++    resources->List[0].BusNumber = device->PciDevice->BusNumber;
++    auto& partial = resources->List[0].PartialResourceList;
++    partial.Version = 1;
++    partial.Revision = 1;
++    partial.Count = count;
++    ULONG next = 0;
++    bool memory = false;
++    bool io = false;
++
++    for (uint32_t index = 0; index < snapshot.bars.count; ++index) {
++        const auto& range = snapshot.bars.ranges[index];
++        auto& descriptor = partial.PartialDescriptors[next++];
++        descriptor.ShareDisposition = CmResourceShareDeviceExclusive;
++
++        if ((range.flags & PCI_ADDRESS_IO_SPACE) != 0) {
++            descriptor.Type = CmResourceTypePort;
++            descriptor.Flags = CM_RESOURCE_PORT_IO | CM_RESOURCE_PORT_16_BIT_DECODE |
++                               CM_RESOURCE_PORT_POSITIVE_DECODE;
++            descriptor.u.Port.Start.QuadPart = static_cast<LONGLONG>(range.base);
++            descriptor.u.Port.Length = static_cast<ULONG>(range.length);
++            io = true;
++        } else {
++            descriptor.Type = CmResourceTypeMemory;
++            descriptor.Flags = memory_flags(range);
++            descriptor.u.Memory.Start.QuadPart = static_cast<LONGLONG>(range.base);
++            descriptor.u.Memory.Length = static_cast<ULONG>(range.length);
++            memory = true;
++        }
++    }
++
++    if (irq) {
++        auto& descriptor = partial.PartialDescriptors[next++];
++        descriptor.Type = CmResourceTypeInterrupt;
++        descriptor.ShareDisposition = CmResourceShareShared;
++        descriptor.Flags = CM_RESOURCE_INTERRUPT_LEVEL_SENSITIVE;
++        descriptor.u.Interrupt.Level = snapshot.config.u.type0.InterruptLine;
++        descriptor.u.Interrupt.Vector = snapshot.config.u.type0.InterruptLine;
++        descriptor.u.Interrupt.Affinity = static_cast<KAFFINITY>(MAXULONG);
++    } else if (bridge) {
++        auto& descriptor = partial.PartialDescriptors[next++];
++        descriptor.Type = CmResourceTypeBusNumber;
++        descriptor.ShareDisposition = CmResourceShareDeviceExclusive;
++        resources->List[0].BusNumber = snapshot.config.u.type1.SecondaryBus;
++        descriptor.u.BusNumber.Start = snapshot.config.u.type1.SecondaryBus;
++        descriptor.u.BusNumber.Length = 1;
++    }
++
++    if (next != count) {
++        return STATUS_INTERNAL_ERROR;
++    }
++
++    device->PciDevice->EnableIoSpace = io ? TRUE : FALSE;
++    device->PciDevice->EnableMemorySpace = memory ? TRUE : FALSE;
++    if (PCI_CONFIGURATION_TYPE(&snapshot.config) == PCI_DEVICE_TYPE) {
++        device->PciDevice->EnableBusMaster = TRUE;
++    }
++    *information = allocation.publish();
++    return STATUS_SUCCESS;
++}

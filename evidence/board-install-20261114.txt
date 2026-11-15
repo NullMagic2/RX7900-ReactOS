@@ -40,3 +40,21 @@ Not established
   Whether ASIC initialisation, 2D acceleration, the hardware cursor or
   OpenGL work correctly on the card; any other card or board; behaviour
   across suspend, hot-unplug or driver removal on real hardware.
+
+Rebuild and source checks, 2026-11-15 (on the build host, not on the card)
+  ./build.sh with a pristine ReactOS a97c8a2 checkout and the published
+  source: rx7900video.sys, radeondisp.dll and radeonglicd.dll each match the
+  released file except for the PE timestamp and checksum (5, 5 and 8 bytes).
+  The same result came from a build inside the as-built ReactOS tree.
+  Host tests: 102 of 102 pass with the pinned upstream register references.
+  RadeonCheck.exe (tests/radeon_board_check.cpp): under Wine in true colour
+  every 2D comparison is identical and the pointer and OpenGL checks pass; in
+  a ReactOS guest it runs to the end and its window and pointer shapes are
+  visible in screenshots; that guest's 16-colour VGA driver returns no pixels
+  on readback (the report's readback lines show it) and the software OpenGL
+  there renders correctly but cannot present to the 16-colour screen.
+
+Still not established
+  Any RadeonCheck report from the real card. The program is in the package for
+  that purpose; until a report exists, 2D acceleration, the hardware cursor and
+  OpenGL remain unchecked on hardware.

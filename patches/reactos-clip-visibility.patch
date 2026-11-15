@@ -1,0 +1,118 @@
+diff --git a/win32ss/CMakeLists.txt b/win32ss/CMakeLists.txt
+index 3e2f3d2..e33be83 100644
+--- a/win32ss/CMakeLists.txt
++++ b/win32ss/CMakeLists.txt
+@@ -328,3 +328,26 @@ add_asm_files(win32ksys_asm sys-stubs.S)
+ add_library(win32ksys ${win32ksys_asm})
+ set_target_properties(win32ksys PROPERTIES LINKER_LANGUAGE "C")
+ add_dependencies(win32ksys asm)
++
++# Optional explicit empty-region classification at the native DDI boundary.
++option(RX7900_FRAMEBUFFER_CLIP_VISIBILITY "Preserve updated empty visible regions" OFF)
++set(RX7900_FRAMEBUFFER_CLIP_VISIBILITY_SOURCE "" CACHE PATH "RX7900 native C++ source directory")
++if(RX7900_FRAMEBUFFER_CLIP_VISIBILITY)
++    if(NOT EXISTS "${RX7900_FRAMEBUFFER_CLIP_VISIBILITY_SOURCE}/framebuffer_clip_visibility.cpp")
++        message(FATAL_ERROR "RX7900_FRAMEBUFFER_CLIP_VISIBILITY_SOURCE must contain framebuffer_clip_visibility.cpp")
++    endif()
++    target_sources(win32k PRIVATE "${RX7900_FRAMEBUFFER_CLIP_VISIBILITY_SOURCE}/framebuffer_clip_visibility.cpp")
++    target_include_directories(win32k PRIVATE "${RX7900_FRAMEBUFFER_CLIP_VISIBILITY_SOURCE}")
++    target_compile_definitions(win32k PRIVATE RX7900_FRAMEBUFFER_CLIP_VISIBILITY)
++    if(RX7900_FRAMEBUFFER_DRAW_ESCAPE)
++        target_compile_definitions(win32k PRIVATE RX7900_FRAMEBUFFER_WINDOW_VISIBILITY)
++    endif()
++    set_target_properties(win32k PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES
++        WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
++endif()
++
++# Explicit temporary metadata tracing for retained window-DC diagnosis.
++option(RX7900_DRAW_ESCAPE_CLIP_TRACE "Trace locked DrawEscape clip metadata" OFF)
++if(RX7900_DRAW_ESCAPE_CLIP_TRACE)
++    target_compile_definitions(win32k PRIVATE RX7900_DRAW_ESCAPE_CLIP_TRACE)
++endif()
+diff --git a/win32ss/gdi/eng/clip.c b/win32ss/gdi/eng/clip.c
+index e91a099..9a88654 100644
+--- a/win32ss/gdi/eng/clip.c
++++ b/win32ss/gdi/eng/clip.c
+@@ -7,6 +7,9 @@
+  */
+ 
+ #include <win32k.h>
++#ifdef RX7900_FRAMEBUFFER_CLIP_VISIBILITY
++#include "framebuffer_clip_visibility.hpp"
++#endif
+ DBG_DEFAULT_CHANNEL(EngClip);
+ 
+ 
+@@ -212,6 +215,9 @@ IntEngUpdateClipRegion(
+             EngFreeMem(Clip->Rects);
+         Clip->Rects = &Clip->rclBounds;
+     }
++#ifdef RX7900_FRAMEBUFFER_CLIP_VISIBILITY
++    Rx7900NormalizeClipRegion((CLIPOBJ*)Clip);
++#endif
+ }
+ 
+ /*
+diff --git a/win32ss/gdi/ntgdi/dibobj.c b/win32ss/gdi/ntgdi/dibobj.c
+index eed9644..3a83c0a 100644
+--- a/win32ss/gdi/ntgdi/dibobj.c
++++ b/win32ss/gdi/ntgdi/dibobj.c
+@@ -467,7 +467,11 @@ done:
+ W32KAPI
+ INT
+ APIENTRY
++#ifdef RX7900_FRAMEBUFFER_WINDOW_VISIBILITY
++LightningSetDIBitsImplementation(
++#else
+ NtGdiSetDIBitsToDeviceInternal(
++#endif
+     IN HDC hDC,
+     IN INT XDest,
+     IN INT YDest,
+@@ -1216,7 +1220,11 @@ cleanup:
+ W32KAPI
+ INT
+ APIENTRY
++#ifdef RX7900_FRAMEBUFFER_WINDOW_VISIBILITY
++LightningStretchDIBitsImplementation(
++#else
+ NtGdiStretchDIBitsInternal(
++#endif
+     IN HDC hdc,
+     IN INT xDst,
+     IN INT yDst,
+diff --git a/win32ss/user/ntuser/windc.c b/win32ss/user/ntuser/windc.c
+index a80ea2a..199833d 100644
+--- a/win32ss/user/ntuser/windc.c
++++ b/win32ss/user/ntuser/windc.c
+@@ -7,6 +7,9 @@
+  */
+ 
+ #include <win32k.h>
++#ifdef RX7900_FRAMEBUFFER_WINDOW_VISIBILITY
++#include "framebuffer_draw_escape.hpp"
++#endif
+ DBG_DEFAULT_CHANNEL(UserDce);
+ 
+ /* GLOBALS *******************************************************************/
+@@ -540,6 +543,9 @@ UserGetDCEx(PWND Wnd OPTIONAL, HANDLE ClipRegion, ULONG Flags)
+       /* FIXME: Handle error */
+    }
+ 
++#ifdef RX7900_FRAMEBUFFER_WINDOW_VISIBILITY
++   bUpdateVisRgn = LightningWindowDcNeedsRefresh(Dce, bUpdateVisRgn);
++#endif
+    Dce->DCXFlags = Flags | DCX_DCEBUSY;
+ 
+    /*
+@@ -850,6 +856,10 @@ DceResetActiveDCEs(PWND Window)
+             }
+          }
+ 
++#ifdef RX7900_FRAMEBUFFER_WINDOW_VISIBILITY
++         if (!LightningMayRefreshWindowDc(pDCE))
++             continue;
++#endif
+          if (!GreIsHandleValid(pDCE->hDC) ||
+              (dc = DC_LockDc(pDCE->hDC)) == NULL)
+          {

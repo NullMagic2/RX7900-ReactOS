@@ -31,6 +31,10 @@ set(rx7900_layers_reactos-text-batch.patch reactos-radeon-text-bridge.patch)
 function(apply_checked_patch patch_name description)
     find_program(rx7900_git git REQUIRED)
     set(patch_path "${component_root}/patches/${patch_name}")
+    if(NOT EXISTS "${patch_path}")
+        message(FATAL_ERROR "patches/${patch_name} (${description}) was not preserved with this "
+            "source; leave its REACTOS_APPLY option off")
+    endif()
     execute_process(COMMAND "${rx7900_git}" apply --reverse --check "${patch_path}"
         WORKING_DIRECTORY "${reactos_root}" RESULT_VARIABLE already_applied
         OUTPUT_QUIET ERROR_QUIET)
@@ -62,8 +66,10 @@ if(REACTOS_APPLY_PCI_FIX)
     apply_checked_patch(reactos-pci-resources.patch "PCI resource")
 endif()
 if(REACTOS_APPLY_FRAMEBUFFER_SHADOW)
-    apply_checked_patch(reactos-framebuffer-shadow.patch "cached framebuffer")
-    apply_checked_patch(reactos-framebuffer-mode-owner.patch "mapped display owner")
+    # The recovered reactos-framebuffer-shadow.patch (2026-11-15) also carries
+    # the change that used to be reactos-framebuffer-mode-owner.patch: both were
+    # reconstructed together from the as-built tree and could not be separated.
+    apply_checked_patch(reactos-framebuffer-shadow.patch "cached framebuffer and mapped display owner")
 endif()
 if(REACTOS_APPLY_TEXT_BATCH)
     apply_checked_patch(reactos-text-batch.patch "kernel text batching")

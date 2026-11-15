@@ -897,6 +897,21 @@ endif()
 # backend. Host tests validate every register against the pinned GC 11.0.0
 # headers, execute kernel-built IBs in the pipeline model against gl_raster and
 # exercise the version-3 security boundary.
+# Test references (2026-11-15): the pinned upstream register files used to live
+# beside the project in ../../work. A standalone test build now downloads the
+# six files the tests read into Binaries/upstream, verified by SHA-256.
+if(NOT COMMAND set_module_type AND BUILD_TESTING)
+    option(RX7900_FETCH_TEST_REFERENCES "Download the pinned upstream register references for host tests" ON)
+    if(RX7900_FETCH_TEST_REFERENCES AND NOT DEFINED CACHE{RX7900_UPSTREAM_GPUINIT_DIR}
+            AND NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../work/upstream-gpuinit/SHA256SUMS")
+        include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/test-references.cmake")
+        rx7900_fetch_test_references("${CMAKE_CURRENT_SOURCE_DIR}/Binaries/upstream")
+        set(RX7900_UPSTREAM_GPUINIT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Binaries/upstream/gpuinit"
+            CACHE PATH "Pinned upstream GPU references (gc_11_0_0 headers, Mesa 24.2.0 JSON)")
+        set(RX7900_UPSTREAM_DCN_STREAM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Binaries/upstream/dcn-stream"
+            CACHE PATH "Pinned Linux v6.12 DCN 3.2 stream sources (register headers and reference code)")
+    endif()
+endif()
 set(RX7900_UPSTREAM_GPUINIT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../work/upstream-gpuinit"
     CACHE PATH "Pinned upstream GPU references (gc_11_0_0 headers, Mesa 24.2.0 JSON)")
 if(COMMAND set_module_type)
@@ -1236,5 +1251,20 @@ if(NOT COMMAND set_module_type AND WIN32)
     if(MINGW)
         target_compile_options(rx7900setup PRIVATE -Wall -Wextra -Werror)
         target_link_options(rx7900setup PRIVATE -municode -static -static-libgcc -static-libstdc++)
+    endif()
+endif()
+
+# Board check (2026-11-15, appended): a program a person runs on the ReactOS
+# desktop of a machine with the card. It compares GDI drawing on the screen
+# with the same drawing on a memory bitmap, exercises the mouse pointer and a
+# small OpenGL scene, and writes a flushed report beside itself.
+if(NOT COMMAND set_module_type AND WIN32)
+    add_executable(radeoncheck WIN32 tests/radeon_board_check.cpp)
+    set_target_properties(radeoncheck PROPERTIES OUTPUT_NAME RadeonCheck CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+    target_link_libraries(radeoncheck PRIVATE opengl32 gdi32 user32)
+    if(MINGW)
+        target_compile_options(radeoncheck PRIVATE -Wall -Wextra -Werror)
+        target_link_options(radeoncheck PRIVATE -municode -static -static-libgcc -static-libstdc++)
     endif()
 endif()

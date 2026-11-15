@@ -1,0 +1,211 @@
+diff --git a/sdk/tools/gendib/gendib.c b/sdk/tools/gendib/gendib.c
+index c48d940..6a67e49 100644
+--- a/sdk/tools/gendib/gendib.c
++++ b/sdk/tools/gendib/gendib.c
+@@ -523,14 +523,24 @@ CreateBitCase(FILE *Out, unsigned Bpp, PROPINFO RopInfo, int Flags,
+     {
+         if (0 == (Flags & FLAG_BOTTOMUP))
+         {
++            Output(Out, "#ifdef RX7900_FRAMEBUFFER_BRUSH_ORIGIN\n");
++            Output(Out, "if (!Rx7900PatternPhase(BltInfo->DestRect.top, BltInfo->BrushOrigin.y,\n");
++            Output(Out, "    BltInfo->PatternSurface->sizlBitmap.cy, &PatternY)) return;\n");
++            Output(Out, "#else\n");
+             Output(Out, "PatternY = (BltInfo->DestRect.top - BltInfo->BrushOrigin.y) %%\n");
+             Output(Out, "           BltInfo->PatternSurface->sizlBitmap.cy;\n");
++            Output(Out, "#endif\n");
+         }
+         else
+         {
++            Output(Out, "#ifdef RX7900_FRAMEBUFFER_BRUSH_ORIGIN\n");
++            Output(Out, "if (!Rx7900PatternPhase((LONGLONG)BltInfo->DestRect.bottom - 1, BltInfo->BrushOrigin.y,\n");
++            Output(Out, "    BltInfo->PatternSurface->sizlBitmap.cy, &PatternY)) return;\n");
++            Output(Out, "#else\n");
+             Output(Out, "PatternY = (BltInfo->DestRect.bottom - 1 -\n");
+             Output(Out, "            BltInfo->BrushOrigin.y) %%\n");
+             Output(Out, "           BltInfo->PatternSurface->sizlBitmap.cy;\n");
++            Output(Out, "#endif\n");
+         }
+     }
+     if (ROPCODE_SRCCOPY == RopInfo->RopCode &&
+@@ -541,8 +551,13 @@ CreateBitCase(FILE *Out, unsigned Bpp, PROPINFO RopInfo, int Flags,
+     }
+     if (RopInfo->UsesPattern && 0 != (Flags & FLAG_PATTERNSURFACE))
+     {
++        Output(Out, "#ifdef RX7900_FRAMEBUFFER_BRUSH_ORIGIN\n");
++        Output(Out, "if (!Rx7900PatternPhase(BltInfo->DestRect.left, BltInfo->BrushOrigin.x,\n");
++        Output(Out, "    BltInfo->PatternSurface->sizlBitmap.cx, &BasePatternX)) return;\n");
++        Output(Out, "#else\n");
+         Output(Out, "BasePatternX = (BltInfo->DestRect.left - BltInfo->BrushOrigin.x) %%\n");
+         Output(Out, "           BltInfo->PatternSurface->sizlBitmap.cx;\n");
++        Output(Out, "#endif\n");
+     }
+ 
+     Output(Out, "for (LineIndex = 0; LineIndex < LineCount; LineIndex++)\n");
+@@ -961,6 +976,14 @@ CreateBitBlt(FILE *Out, unsigned Bpp)
+     Output(Out, "BOOLEAN\n");
+     Output(Out, "DIB_%uBPP_BitBlt(PBLTINFO BltInfo)\n", Bpp);
+     Output(Out, "{\n");
++    Output(Out, "#ifdef RX7900_FRAMEBUFFER_BRUSH_ORIGIN\n");
++    Output(Out, "if (BltInfo->PatternSurface != NULL && ROP4_USES_PATTERN(BltInfo->Rop4))\n");
++    Output(Out, "{\n");
++    Output(Out, "LONG phase;\n");
++    Output(Out, "if (!Rx7900PatternPhase(0, 0, BltInfo->PatternSurface->sizlBitmap.cx, &phase) ||\n");
++    Output(Out, "    !Rx7900PatternPhase(0, 0, BltInfo->PatternSurface->sizlBitmap.cy, &phase)) return FALSE;\n");
++    Output(Out, "}\n");
++    Output(Out, "#endif\n");
+     Output(Out, "PrimitivesTable[BltInfo->Rop4 & 0xff](BltInfo);\n");
+     Output(Out, "\n");
+     Output(Out, "return TRUE;\n");
+@@ -1000,6 +1023,9 @@ Generate(char *OutputDir, unsigned Bpp)
+     Output(Out, "/* This is a generated file. Please do not edit */\n");
+     Output(Out, "\n");
+     Output(Out, "#include <win32k.h>\n");
++    Output(Out, "#ifdef RX7900_FRAMEBUFFER_BRUSH_ORIGIN\n");
++    Output(Out, "#include \"framebuffer_brush_origin.hpp\"\n");
++    Output(Out, "#endif\n");
+     CreateShiftTables(Out);
+ 
+     RopInfo = FindRopInfo(ROPCODE_GENERIC);
+diff --git a/win32ss/CMakeLists.txt b/win32ss/CMakeLists.txt
+index 3e2f3d2..833ead1 100644
+--- a/win32ss/CMakeLists.txt
++++ b/win32ss/CMakeLists.txt
+@@ -319,6 +319,20 @@ endif()
+ add_importlibs(win32k ntoskrnl hal ftfd)
+ add_cd_file(TARGET win32k DESTINATION reactos/system32 FOR all)
+ 
++# Optional checked device brush origins use the current locked DC attributes.
++option(RX7900_FRAMEBUFFER_BRUSH_ORIGIN "Translate current DC brush origins safely" OFF)
++set(RX7900_FRAMEBUFFER_BRUSH_ORIGIN_SOURCE "" CACHE PATH "RX7900 native C++ source directory")
++if(RX7900_FRAMEBUFFER_BRUSH_ORIGIN)
++    if(NOT EXISTS "${RX7900_FRAMEBUFFER_BRUSH_ORIGIN_SOURCE}/framebuffer_brush_origin.cpp")
++        message(FATAL_ERROR "RX7900_FRAMEBUFFER_BRUSH_ORIGIN_SOURCE must contain framebuffer_brush_origin.cpp")
++    endif()
++    target_sources(win32k PRIVATE "${RX7900_FRAMEBUFFER_BRUSH_ORIGIN_SOURCE}/framebuffer_brush_origin.cpp")
++    target_include_directories(win32k PRIVATE "${RX7900_FRAMEBUFFER_BRUSH_ORIGIN_SOURCE}")
++    target_compile_definitions(win32k PRIVATE RX7900_FRAMEBUFFER_BRUSH_ORIGIN)
++    set_target_properties(win32k PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES
++        WITH_CXX_EXCEPTIONS FALSE WITH_CXX_RTTI FALSE)
++endif()
++
+ if(ARCH STREQUAL "amd64")
+     set_source_files_properties(sys-stubs.S PROPERTIES OBJECT_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/w32ksvc64.h)
+ else()
+diff --git a/win32ss/gdi/ntgdi/bitblt.c b/win32ss/gdi/ntgdi/bitblt.c
+index cafd432..e6d9e37 100644
+--- a/win32ss/gdi/ntgdi/bitblt.c
++++ b/win32ss/gdi/ntgdi/bitblt.c
+@@ -7,6 +7,9 @@
+  */
+ 
+ #include <win32k.h>
++#ifdef RX7900_FRAMEBUFFER_BRUSH_ORIGIN
++#include "framebuffer_brush_origin.hpp"
++#endif
+ DBG_DEFAULT_CHANNEL(GdiBlt);
+ 
+ BOOL APIENTRY
+@@ -332,6 +335,9 @@ NtGdiMaskBlt(
+     SURFACE *BitmapDest, *BitmapSrc = NULL, *psurfMask = NULL;
+     RECTL DestRect, SourceRect;
+     POINTL SourcePoint, MaskPoint;
++#ifdef RX7900_FRAMEBUFFER_BRUSH_ORIGIN
++    POINTL BrushOrigin = {0, 0};
++#endif
+     BOOL Status = FALSE;
+     EXLATEOBJ exlo;
+     XLATEOBJ *XlateObj = NULL;
+@@ -468,6 +474,15 @@ NtGdiMaskBlt(
+     /* Prepare blit */
+     DC_vPrepareDCsForBlit(DCDest, &DestRect, DCSrc, &SourceRect);
+ 
++#ifdef RX7900_FRAMEBUFFER_BRUSH_ORIGIN
++    /* DC attributes, unlike the shared BRUSH object, own SetBrushOrgEx state.
++     * Check before allocating the translation object; cleanup still owns DCs. */
++    if (UsesPattern && !Rx7900BrushOrigin(&pdcattr->ptlBrushOrigin, &DCDest->ptlDCOrig, &BrushOrigin))
++    {
++        EngSetLastError(ERROR_INVALID_PARAMETER);
++        goto cleanup;
++    }
++#endif
+     if (pdcattr->ulDirty_ & (DIRTY_FILL | DC_BRUSH_DIRTY))
+         DC_vUpdateFillBrush(DCDest);
+ 
+@@ -520,7 +535,11 @@ NtGdiMaskBlt(
+                           &SourcePoint,
+                           &MaskPoint,
+                           &DCDest->eboFill.BrushObject,
++#ifdef RX7900_FRAMEBUFFER_BRUSH_ORIGIN
++                          &BrushOrigin,
++#else
+                           &DCDest->dclevel.pbrFill->ptOrigin,
++#endif
+                           rop4);
+ 
+     if (UsesSource)
+@@ -896,7 +915,16 @@ IntPatBlt(
+        IntUpdateBoundsRect(pdc, &DestRect);
+     }
+ 
+-#ifdef _USE_DIBLIB_
++#ifdef RX7900_FRAMEBUFFER_BRUSH_ORIGIN
++    BrushOrigin.x = 0;
++    BrushOrigin.y = 0;
++    if (ROP4_USES_PATTERN(WIN32_ROP3_TO_ENG_ROP4(dwRop3)) &&
++        !Rx7900BrushOrigin(&pdc->pdcattr->ptlBrushOrigin, &pdc->ptlDCOrig, &BrushOrigin))
++    {
++        EngSetLastError(ERROR_INVALID_PARAMETER);
++        return FALSE;
++    }
++#elif defined(_USE_DIBLIB_)
+     BrushOrigin.x = pbrush->ptOrigin.x + pdc->ptlDCOrig.x + XLeft;
+     BrushOrigin.y = pbrush->ptOrigin.y + pdc->ptlDCOrig.y + YLeft;
+ #else
+@@ -1199,6 +1227,9 @@ IntGdiFillRgn(
+     BOOL bRet;
+     DWORD rop2Fg;
+     MIX mix;
++#ifdef RX7900_FRAMEBUFFER_BRUSH_ORIGIN
++    POINTL brushOrigin;
++#endif
+     NT_ASSERT((pdc != NULL) && (prgn != NULL));
+ 
+     if (pdc->dclevel.pSurface == NULL)
+@@ -1206,6 +1237,14 @@ IntGdiFillRgn(
+         return TRUE;
+     }
+ 
++#ifdef RX7900_FRAMEBUFFER_BRUSH_ORIGIN
++    if (!Rx7900BrushOrigin(&pdc->pdcattr->ptlBrushOrigin, &pdc->ptlDCOrig, &brushOrigin))
++    {
++        EngSetLastError(ERROR_INVALID_PARAMETER);
++        return FALSE;
++    }
++#endif
++
+     prgnClip = IntSysCreateRectpRgn(0, 0, 0, 0);
+     if (prgnClip == NULL)
+     {
+@@ -1257,7 +1296,11 @@ IntGdiFillRgn(
+     {
+         /* Initialize the brush object */
+         /// \todo Check parameters
++#ifdef RX7900_FRAMEBUFFER_BRUSH_ORIGIN
++        EBRUSHOBJ_vInitFromDC(&eboFill, pbrFill, pdc);
++#else
+         EBRUSHOBJ_vInit(&eboFill, pbrFill, pdc->dclevel.pSurface, 0x00FFFFFF, 0, NULL);
++#endif
+         pbo = &eboFill.BrushObject;
+     }
+     else
+@@ -1277,6 +1320,10 @@ IntGdiFillRgn(
+                        &pdc->ptlFillOrigin,
+                        mix);
+ 
++#ifdef RX7900_FRAMEBUFFER_BRUSH_ORIGIN
++    if (pbrFill != NULL)
++        EBRUSHOBJ_vCleanup(&eboFill);
++#endif
+     DC_vFinishBlit(pdc, NULL);
+     REGION_Delete(prgnClip);
+     IntEngFreeClipResources(&xcoClip);
