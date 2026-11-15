@@ -12,7 +12,7 @@ That is all that has been observed on real hardware. Not checked: correctness of
 
 ## Download and installation
 
-Download **RX7900-ReactOS-Standalone-i386.zip** from the [latest release](https://github.com/NullMagic2/RX7900-ReactOS/releases/latest).
+Download **[RX7900-ReactOS-Standalone-i386.zip](https://github.com/NullMagic2/RX7900-ReactOS/releases/download/v0.1.0-alpha.1/RX7900-ReactOS-Standalone-i386.zip)** (pre-release v0.1.0-alpha.1).
 
 1. Extract the ZIP inside **ReactOS i386**.
 2. Run **Setup.exe** as administrator, choose the options and let it install.
